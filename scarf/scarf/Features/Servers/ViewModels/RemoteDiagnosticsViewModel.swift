@@ -79,7 +79,7 @@ final class RemoteDiagnosticsViewModel {
             case .stateDBReadable:
                 return "Scarf can't read `state.db` — Sessions, Activity, Dashboard stats all depend on this. Same fix pattern as config.yaml."
             case .sqlite3Installed:
-                return "Scarf pulls a snapshot of state.db via `sqlite3 .backup`, so sqlite3 must be installed on the remote. Install: `sudo apt install sqlite3` (Ubuntu/Debian), `sudo yum install sqlite` (RHEL/Fedora), `apk add sqlite` (Alpine)."
+                return "Scarf pulls a snapshot of state.db via `sqlite3 .backup`, so sqlite3 must be installed on the remote AND visible to non-interactive SSH sessions. The probe sources `~/.zshenv` / `.zprofile` / `.bash_profile` / `.profile` and falls back to `/usr/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, and `/opt/local/bin` — if it's still not found, either install via your package manager (`sudo apt install sqlite3` / `sudo yum install sqlite` / `apk add sqlite`) or symlink the existing binary into a location the probe checks (e.g. `sudo ln -s /your/path/sqlite3 /usr/local/bin/sqlite3`)."
             case .sqlite3CanOpenStateDB:
                 return "sqlite3 exists but can't open state.db. Could be a permission issue, a corrupt DB, or a version skew."
             case .hermesBinaryNonLogin:
@@ -238,21 +238,10 @@ final class RemoteDiagnosticsViewModel {
             fi
         fi
 
-        if command -v sqlite3 > /dev/null 2>&1; then
-            sq=$(command -v sqlite3)
-            emit sqlite3Installed PASS "$sq"
-        else
-            emit sqlite3Installed FAIL "sqlite3 not on PATH"
-        fi
-
-        if sqlite3 "$H/state.db" 'SELECT 1' > /dev/null 2>&1; then
-            emit sqlite3CanOpenStateDB PASS ""
-        else
-            err=$(sqlite3 "$H/state.db" 'SELECT 1' 2>&1 | head -1)
-            emit sqlite3CanOpenStateDB FAIL "$err"
-        fi
-
-        # Non-login PATH: just ask the current shell.
+        # Non-login PATH probe for `hermes` runs in the bare shell BEFORE
+        # sourcing rc files — that semantic ("is hermes on the un-enriched
+        # PATH the SSH session inherits?") is meaningful and we don't
+        # want to muddle it.
         hpath=$(command -v hermes 2>/dev/null)
         if [ -n "$hpath" ]; then
             emit hermesBinaryNonLogin PASS "$hpath"
@@ -260,10 +249,18 @@ final class RemoteDiagnosticsViewModel {
             emit hermesBinaryNonLogin FAIL "not on non-login PATH ($PATH)"
         fi
 
-        # Login PATH: source rc files (mirroring TestConnectionProbe) and re-probe.
+        # Source rc files (mirroring TestConnectionProbe) so subsequent
+        # probes see the user's full login PATH. sqlite3 / hermes-login
+        # detection happens AFTER this so installs in Homebrew /
+        # `/usr/local/bin` / pipx / etc. are findable on hosts where the
+        # non-login SSH session inherits a stripped PATH (issue #19,
+        # @cmalpass's case where sqlite3 was installed but probed as
+        # missing — the non-login shell didn't have Homebrew on PATH).
         for rc in "$HOME/.zshenv" "$HOME/.zprofile" "$HOME/.bash_profile" "$HOME/.profile"; do
             [ -f "$rc" ] && . "$rc" 2>/dev/null
         done
+
+        # Login-PATH `hermes` probe with hardcoded candidate fallback.
         hpath2=$(command -v hermes 2>/dev/null)
         if [ -z "$hpath2" ]; then
             for cand in "$HOME/.local/bin/hermes" "/opt/homebrew/bin/hermes" "/usr/local/bin/hermes" "$HOME/.hermes/bin/hermes"; do
@@ -274,6 +271,36 @@ final class RemoteDiagnosticsViewModel {
             emit hermesBinaryLogin PASS "$hpath2"
         else
             emit hermesBinaryLogin FAIL "not found after sourcing rc files"
+        fi
+
+        # sqlite3 detection — also after sourcing rc files, with a
+        # standard-location fallback that mirrors the hermes probe
+        # above. Pre-fix this was a bare `command -v sqlite3` in the
+        # non-login shell, which produced false negatives on Homebrew
+        # / `/usr/local/bin` installs (issue #19 layer 3).
+        sqbin=$(command -v sqlite3 2>/dev/null)
+        if [ -z "$sqbin" ]; then
+            for cand in "/usr/bin/sqlite3" "/usr/local/bin/sqlite3" "/opt/homebrew/bin/sqlite3" "/opt/local/bin/sqlite3"; do
+                if [ -x "$cand" ]; then sqbin="$cand"; break; fi
+            done
+        fi
+        if [ -n "$sqbin" ]; then
+            emit sqlite3Installed PASS "$sqbin"
+        else
+            emit sqlite3Installed FAIL "not found on PATH or in standard locations"
+        fi
+
+        # Use the resolved sqlite3 path explicitly so the open-state.db
+        # probe doesn't re-fail-by-PATH when the binary is at e.g.
+        # /opt/homebrew/bin. Falls back to bare `sqlite3` so the FAIL
+        # detail line (with the underlying error) is still informative
+        # if no candidate was found.
+        sqcmd="${sqbin:-sqlite3}"
+        if "$sqcmd" "$H/state.db" 'SELECT 1' > /dev/null 2>&1; then
+            emit sqlite3CanOpenStateDB PASS ""
+        else
+            err=$("$sqcmd" "$H/state.db" 'SELECT 1' 2>&1 | head -1)
+            emit sqlite3CanOpenStateDB FAIL "$err"
         fi
 
         if command -v pgrep > /dev/null 2>&1; then
