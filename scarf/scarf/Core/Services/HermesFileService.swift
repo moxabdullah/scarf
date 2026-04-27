@@ -1442,17 +1442,44 @@ struct HermesFileService: Sendable {
                 }
             }
         }
-        // Scan auth.json (Credential Pools file written by the Configure →
-        // Credential Pools UI). Schema:
-        //   { "credential_pool": { "<provider>": [ { "access_token": "...", ... }, ... ] } }
-        // Defensive parse: any malformed input falls through to the next check.
+        // Scan auth.json. Two shapes need to count as "credential present":
+        //
+        //   1. credential_pool.<provider>[].access_token
+        //      — written by Configure → Credential Pools (manual key entry,
+        //        round-robin / least-used routing).
+        //
+        //   2. providers.<name>.access_token
+        //      — written by `hermes auth add <name>` for OAuth-authed
+        //        providers (Nous Portal, Spotify, GitHub Copilot ACP, etc.).
+        //        Pre-fix this was ignored, so a user with only Nous OAuth
+        //        kept seeing the "No AI provider credentials" banner even
+        //        after a successful Nous sign-in.
+        //
+        // Defensive parse: malformed input falls through to the next check.
         if let data = readFileData(context.paths.authJSON),
-           let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let pool = root["credential_pool"] as? [String: Any] {
-            for (_, entries) in pool {
-                guard let list = entries as? [[String: Any]] else { continue }
-                for cred in list {
-                    if let token = cred["access_token"] as? String, !token.isEmpty {
+           let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        {
+            if let pool = root["credential_pool"] as? [String: Any] {
+                for (_, entries) in pool {
+                    guard let list = entries as? [[String: Any]] else { continue }
+                    for cred in list {
+                        if let token = cred["access_token"] as? String, !token.isEmpty {
+                            return true
+                        }
+                    }
+                }
+            }
+            if let providers = root["providers"] as? [String: Any] {
+                for (_, value) in providers {
+                    guard let entry = value as? [String: Any] else { continue }
+                    if let token = entry["access_token"] as? String, !token.isEmpty {
+                        return true
+                    }
+                    // Some auth records (Spotify) carry only a refresh
+                    // token until the first access-token mint — count
+                    // that too so we don't false-negative seconds-old
+                    // OAuth flows.
+                    if let refresh = entry["refresh_token"] as? String, !refresh.isEmpty {
                         return true
                     }
                 }

@@ -52,6 +52,21 @@ struct HermesCredentialPool: Identifiable, Sendable {
     let credentials: [HermesCredential]
 }
 
+/// OAuth-authed provider parsed from `auth.json.providers.<name>`. Distinct
+/// from `HermesCredentialPool` because OAuth providers don't pool — one
+/// active token per provider, refresh handled by Hermes. Nous, Spotify,
+/// GitHub Copilot ACP, Qwen, Gemini all land here.
+struct HermesOAuthProvider: Identifiable, Sendable, Equatable {
+    var id: String { provider }
+    let provider: String         // "nous" | "spotify" | ...
+    let tokenTail: String        // last 4 of access_token, never the full token
+    let hasAccessToken: Bool
+    let hasRefreshToken: Bool
+    let expiresAt: Date?
+    let portalURL: String?       // "portal_base_url" — Nous-specific but generic-shaped
+    let updatedAt: Date?
+}
+
 @Observable
 @MainActor
 final class CredentialPoolsViewModel {
@@ -64,6 +79,13 @@ final class CredentialPoolsViewModel {
     }
 
     var pools: [HermesCredentialPool] = []
+    /// OAuth-authed providers from `auth.json.providers.<name>` (Nous,
+    /// Spotify, etc.). These have a different shape from `credential_pool`
+    /// entries — one access token per provider, no rotation strategy —
+    /// so they render in a parallel section rather than as a single-entry
+    /// pool. Without this, OAuth providers were invisible in the UI even
+    /// after a successful sign-in.
+    var oauthProviders: [HermesOAuthProvider] = []
     var isLoading = false
     var message: String?
 
@@ -101,10 +123,67 @@ final class CredentialPoolsViewModel {
                 decodedPools = []
             }
 
+            // OAuth providers are a parallel surface — different shape, so
+            // we parse via `JSONSerialization` instead of folding into the
+            // strict `AuthFile` decoder. A malformed `providers` block is
+            // a non-fatal shrug: empty list, no banner.
+            let oauth = Self.parseOAuthProviders(from: authData)
+
             await MainActor.run { [weak self] in
                 self?.pools = decodedPools
+                self?.oauthProviders = oauth
                 self?.isLoading = false
             }
+        }
+    }
+
+    /// Pull `providers.<name>` entries out of `auth.json` and shape them
+    /// for the UI. Returns an empty array when the file is missing,
+    /// unparseable, or has no `providers` key.
+    nonisolated private static func parseOAuthProviders(from data: Data?) -> [HermesOAuthProvider] {
+        guard let data,
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let providers = root["providers"] as? [String: Any]
+        else { return [] }
+
+        return providers.keys.sorted().compactMap { name in
+            guard let entry = providers[name] as? [String: Any] else { return nil }
+            let access = entry["access_token"] as? String ?? ""
+            let refresh = entry["refresh_token"] as? String ?? ""
+            // Worth surfacing if there's ANY token shape — pre-mint
+            // refresh-only entries shouldn't be hidden.
+            guard !access.isEmpty || !refresh.isEmpty else { return nil }
+
+            let expiresAt: Date? = {
+                if let ms = entry["expires_at_ms"] as? Double, ms > 0 {
+                    return Date(timeIntervalSince1970: ms / 1000.0)
+                }
+                if let secs = entry["expires_at"] as? Double, secs > 0 {
+                    // Hermes' Nous flow writes epoch seconds as a Double here.
+                    return Date(timeIntervalSince1970: secs)
+                }
+                if let iso = entry["expires_at"] as? String {
+                    return Self.parseISO8601(iso)
+                }
+                return nil
+            }()
+
+            let updatedAt: Date? = {
+                if let iso = entry["obtained_at"] as? String {
+                    return Self.parseISO8601(iso)
+                }
+                return nil
+            }()
+
+            return HermesOAuthProvider(
+                provider: name,
+                tokenTail: Self.tail(of: access.isEmpty ? refresh : access),
+                hasAccessToken: !access.isEmpty,
+                hasRefreshToken: !refresh.isEmpty,
+                expiresAt: expiresAt,
+                portalURL: entry["portal_base_url"] as? String,
+                updatedAt: updatedAt
+            )
         }
     }
 

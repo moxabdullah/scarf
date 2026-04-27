@@ -20,9 +20,12 @@ struct CredentialPoolsView: View {
                     safetyNotice
                     if viewModel.isLoading {
                         ProgressView().padding()
-                    } else if viewModel.pools.isEmpty {
+                    } else if viewModel.pools.isEmpty && viewModel.oauthProviders.isEmpty {
                         emptyState
                     } else {
+                        if !viewModel.oauthProviders.isEmpty {
+                            oauthProvidersSection
+                        }
                         ForEach(viewModel.pools) { pool in
                             poolSection(pool)
                         }
@@ -37,7 +40,7 @@ struct CredentialPoolsView: View {
         .loadingOverlay(
             viewModel.isLoading,
             label: "Loading credentials…",
-            isEmpty: viewModel.pools.isEmpty
+            isEmpty: viewModel.pools.isEmpty && viewModel.oauthProviders.isEmpty
         )
         .onAppear { viewModel.load() }
         .sheet(isPresented: $showAddSheet) {
@@ -112,6 +115,97 @@ struct CredentialPoolsView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 40)
+    }
+
+    /// Render OAuth-authed providers (`auth.json.providers.<name>`) as a
+    /// single section above the rotation pools. Read-only — Hermes owns
+    /// the write path via `hermes auth add <name>`. Rendered only when
+    /// `viewModel.oauthProviders` is non-empty so users without any
+    /// OAuth-authed providers don't see an empty header.
+    @ViewBuilder
+    private var oauthProvidersSection: some View {
+        SettingsSection(title: LocalizedStringKey("OAuth providers"), icon: "person.badge.key") {
+            ForEach(viewModel.oauthProviders) { provider in
+                HStack(spacing: 12) {
+                    Image(systemName: "person.badge.key")
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(provider.provider.capitalized)
+                                .font(.system(.body, weight: .medium))
+                            Text("oauth")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(.quaternary)
+                                .clipShape(Capsule())
+                            if !provider.hasAccessToken && provider.hasRefreshToken {
+                                Text("refresh-only")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                            }
+                            oauthExpiryBadge(provider)
+                        }
+                        HStack(spacing: 8) {
+                            Text(provider.tokenTail.isEmpty ? "—" : provider.tokenTail)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                            if let updated = provider.updatedAt {
+                                Text("authed · \(Self.relativeAge(updated))")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            if let url = provider.portalURL, !url.isEmpty {
+                                Text(url)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                        }
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(.quaternary.opacity(0.3))
+            }
+            HStack {
+                Text("Managed by `hermes auth add <provider>` — Scarf is read-only here.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.quaternary.opacity(0.3))
+        }
+    }
+
+    @ViewBuilder
+    private func oauthExpiryBadge(_ provider: HermesOAuthProvider) -> some View {
+        if let expiresAt = provider.expiresAt {
+            let secondsRemaining = expiresAt.timeIntervalSinceNow
+            if secondsRemaining <= 0 {
+                Text("expired")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(.red)
+                    .clipShape(Capsule())
+            } else if secondsRemaining < 7 * 86_400 {
+                let days = max(1, Int(secondsRemaining / 86_400))
+                Text("expires in \(days)d")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(.orange)
+                    .clipShape(Capsule())
+            }
+        }
     }
 
     @ViewBuilder

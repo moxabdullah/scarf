@@ -33,6 +33,14 @@ final class DashboardViewModel {
     /// surfaceable error.
     var lastReadError: String?
 
+    /// Projects with their own `<project>/.hermes/` directory shadowing
+    /// the global Hermes home. Hermes' CLI uses the closest `.hermes/`
+    /// when invoked from inside such a project, which silently routes
+    /// `hermes auth add` / setup writes into the project-local copy
+    /// instead of `~/.hermes/`. Surfaced as a yellow banner so users
+    /// can consolidate before more state drifts.
+    var hermesShadows: [ProjectHermesShadowDetector.Shadow] = []
+
     func load() async {
         isLoading = true
         // refresh() = close + reopen, forces a fresh remote snapshot. Cheap
@@ -110,6 +118,17 @@ final class DashboardViewModel {
         } else {
             lastReadError = nil
         }
+
+        // Probe for projects with shadow `.hermes/` directories. Read-only
+        // — we just stat each registered project's path. Detached so the
+        // SSH round-trips don't block the load completion.
+        let ctx = context
+        let detector = ProjectHermesShadowDetector(context: ctx)
+        let projects = await Task.detached {
+            ProjectDashboardService(context: ctx).loadRegistry().projects
+        }.value
+        hermesShadows = await detector.detect(in: projects)
+
         isLoading = false
     }
 }
