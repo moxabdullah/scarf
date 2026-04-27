@@ -165,6 +165,15 @@ public final class CitadelServerTransport: ServerTransport, @unchecked Sendable 
         try runSync { try await self.asyncSnapshotSQLite(remotePath: remotePath) }
     }
 
+    /// Path where the most recent successful snapshot was written —
+    /// returned even when the SSH connection is currently down. The
+    /// data service falls back to this when `snapshotSQLite` throws so
+    /// Dashboard / Sessions / Chat-history stay viewable while the
+    /// phone is offline.
+    public var cachedSnapshotPath: URL? {
+        snapshotBaseDir.appendingPathComponent("state.db")
+    }
+
     // MARK: - ServerTransport: watching
 
     public func watchPaths(_ paths: [String]) -> AsyncStream<WatchEvent> {

@@ -16,7 +16,7 @@ public final class ConnectionStatusViewModel {
     #endif
 
     public enum Status: Equatable {
-        /// Healthy: SSH connected AND we can read `~/.hermes/config.yaml`.
+        /// Healthy: SSH connected AND we can read `~/.hermes/state.db`.
         case connected
         /// SSH connects but the follow-up read-access probe failed. Data
         /// views will be empty until this is resolved.
@@ -38,14 +38,17 @@ public final class ConnectionStatusViewModel {
     /// Specific tier-2 failure mode emitted by the probe script. Used to
     /// drive both the pill copy and the popover hint (issue #53).
     public enum DegradedCause: Equatable {
-        /// `config.yaml` is missing entirely. Most common cause: Hermes
-        /// hasn't run `setup` yet on this remote.
+        /// `state.db` is missing entirely. Most common cause: Hermes
+        /// is installed but no session has run on this remote yet.
+        /// Case name kept as `configMissing` for back-compat with
+        /// callers that pattern-match on it; "config" here is loose
+        /// for "Scarf's required state file."
         case configMissing
         /// `~/.hermes` itself doesn't exist. Hermes isn't installed for
         /// the SSH user on this host.
         case homeMissing
         /// File exists but the SSH user can't read it. Permission /
-        /// ownership mismatch.
+        /// ownership mismatch. Same back-compat note as above.
         case configUnreadable
         /// `~/.hermes/active_profile` points at a non-default Hermes
         /// profile and the configured Hermes home doesn't carry the
@@ -110,10 +113,18 @@ public final class ConnectionStatusViewModel {
         let hermesHome = context.paths.home
         // Two-tier probe in one SSH round-trip:
         //   tier 1: `true` — raw connectivity / auth / ControlMaster path
-        //   tier 2: `test -r $HERMESHOME/config.yaml` — can we actually
-        //           read the file Dashboard reads on every tick? Green pill
-        //           only if both pass; yellow "degraded" if tier 1 passes
-        //           but tier 2 fails (the exact symptom in issue #19).
+        //   tier 2: `test -r $HERMESHOME/state.db` — can we actually read
+        //           the file Dashboard / Sessions / Activity all hit on
+        //           every tick? Green pill only if both pass.
+        //
+        // Probe historically targeted `config.yaml`, but Hermes v0.11+
+        // doesn't materialize that file eagerly — it ships with sane
+        // defaults and only writes config.yaml when the user actually
+        // changes something. Result: a freshly-installed Hermes that's
+        // running, persisting sessions, and serving Scarf was being
+        // marked "degraded — config missing" indefinitely. `state.db`
+        // is created on first agent run and is the actual surface
+        // Scarf depends on, so we probe that instead.
         // Script emits two lines: TIER1:<exitcode> and TIER2:<exitcode>.
         let homeArg: String
         if hermesHome.hasPrefix("~/") {
@@ -124,22 +135,21 @@ public final class ConnectionStatusViewModel {
             homeArg = "\"\(hermesHome.replacingOccurrences(of: "\"", with: "\\\""))\""
         }
         // Probe emits a granular `TIER2:1:<cause>` code so the pill can
-        // surface a specific hint (issue #53) instead of the prior
-        // collapsed-to-binary "can't read config.yaml". Causes:
+        // surface a specific hint (issue #53). Causes:
         //   no-home — $H itself doesn't exist
-        //   missing — config.yaml absent
+        //   missing — state.db absent (Hermes hasn't been run yet)
         //   perm    — exists but unreadable by SSH user
-        //   profile:<name> — config missing AND ~/.hermes/active_profile
+        //   profile:<name> — state.db missing AND ~/.hermes/active_profile
         //                    points at a Hermes profile, suggesting Scarf
         //                    is reading the wrong dir
         let script = """
         echo TIER1:0
         H=\(homeArg)
-        if [ -r "$H/config.yaml" ]; then
+        if [ -r "$H/state.db" ]; then
           echo TIER2:0
         elif [ ! -d "$H" ]; then
           echo TIER2:1:no-home
-        elif [ ! -e "$H/config.yaml" ]; then
+        elif [ ! -e "$H/state.db" ]; then
           ACTIVE=""
           if [ -r "$HOME/.hermes/active_profile" ]; then
             ACTIVE=$(head -n1 "$HOME/.hermes/active_profile" 2>/dev/null | tr -d ' \\t\\r\\n')
@@ -263,23 +273,23 @@ public final class ConnectionStatusViewModel {
             )
         case .configMissing:
             return (
-                "Hermes hasn't been set up yet",
-                "`\(hermesHome)/config.yaml` is missing. Run `hermes setup` (or your first `hermes chat`) on the remote to create it. Scarf will go green automatically once it appears."
+                "Hermes hasn't been run yet",
+                "`\(hermesHome)/state.db` is missing — Hermes creates it on first agent run. Start any session on the remote (e.g. `hermes chat`) and Scarf will go green automatically."
             )
         case .configUnreadable:
             return (
-                "Permission denied on config.yaml",
-                "`\(hermesHome)/config.yaml` exists but the SSH user can't read it. Check ownership: `ls -l \(hermesHome)/config.yaml`. Either run Hermes as the SSH user, `chmod a+r` the file, or SSH as the Hermes user."
+                "Permission denied on state.db",
+                "`\(hermesHome)/state.db` exists but the SSH user can't read it. Check ownership: `ls -l \(hermesHome)/state.db`. Either run Hermes as the SSH user, `chmod a+r` the file, or SSH as the Hermes user."
             )
         case .profileActive(let name):
             return (
                 "Hermes profile \"\(name)\" is active",
-                "The remote is using Hermes profile `\(name)` — its config lives at `~/.hermes/profiles/\(name)/config.yaml`, not `\(hermesHome)/config.yaml`. Either set this server's Hermes home to `~/.hermes/profiles/\(name)` in Manage Servers → Edit, or run `hermes profile use default` on the remote to revert."
+                "The remote is using Hermes profile `\(name)` — its state lives at `~/.hermes/profiles/\(name)/state.db`, not `\(hermesHome)/state.db`. Either set this server's Hermes home to `~/.hermes/profiles/\(name)` in Manage Servers → Edit, or run `hermes profile use default` on the remote to revert."
             )
         case .unknown:
             return (
                 "Can't read Hermes state",
-                "SSH is fine but Scarf can't reach `\(hermesHome)/config.yaml`. Run diagnostics for a full breakdown."
+                "SSH is fine but Scarf can't reach `\(hermesHome)/state.db`. Run diagnostics for a full breakdown."
             )
         }
     }

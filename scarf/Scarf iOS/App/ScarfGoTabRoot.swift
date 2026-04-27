@@ -36,6 +36,12 @@ struct ScarfGoTabRoot: View {
     /// through here.
     @State private var coordinator = ScarfGoCoordinator()
 
+    /// SwiftUI's `.onChange(of: ScenePhase)` modifier on a non-active
+    /// tab doesn't fire while the tab is unmounted — the coordinator
+    /// is the single source of truth for scene-phase transitions
+    /// across all tabs.
+    @Environment(\.scenePhase) private var scenePhase
+
     var body: some View {
         // The transport factory is keyed by ServerID, so the correct
         // Keychain slot + config is picked automatically. Reuses the
@@ -118,6 +124,12 @@ struct ScarfGoTabRoot: View {
             // Weak ref — coordinator owns its own lifetime, router
             // just observes.
             NotificationRouter.shared.coordinator = coordinator
+        }
+        // Funnel scene-phase transitions through the coordinator so
+        // tab view-models (notably ChatController) can react even
+        // when their tab isn't currently on-screen.
+        .onChange(of: scenePhase) { _, newPhase in
+            coordinator.setScenePhase(newPhase)
         }
     }
 }

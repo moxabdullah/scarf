@@ -603,6 +603,14 @@ public struct SSHTransport: ServerTransport {
         return URL(fileURLWithPath: localPath)
     }
 
+    /// Path where the most recent successful snapshot was written —
+    /// returned even when the remote is currently unreachable. The
+    /// data service falls back to this when `snapshotSQLite` throws so
+    /// Dashboard / Sessions / Chat-history stay viewable offline.
+    public var cachedSnapshotPath: URL? {
+        URL(fileURLWithPath: snapshotDir + "/state.db")
+    }
+
     // MARK: - Watching
 
     public func watchPaths(_ paths: [String]) -> AsyncStream<WatchEvent> {

@@ -50,6 +50,7 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            connectionBanner
             errorBanner
             projectContextBar
             messageList
@@ -117,6 +118,23 @@ struct ChatView: View {
             guard let projectPath = new else { return }
             coordinator?.pendingProjectChat = nil
             Task { await consumePendingProjectChat(projectPath) }
+        }
+        // React to network reachability transitions. The service
+        // updates its `transitionTick` on every `.satisfied <->
+        // .unsatisfied` edge; the `.onChange` here funnels each
+        // edge into ChatController so the reconnect machinery can
+        // suspend on link-down and resume on link-up.
+        .onChange(of: NetworkReachabilityService.shared.transitionTick) { _, _ in
+            Task { await controller.handleReachabilityChange() }
+        }
+        // React to scene-phase transitions (background → active etc).
+        // Source of truth is the coordinator, not `@Environment(\.scenePhase)`,
+        // so the chat tab still picks up phase changes that happened
+        // while it was unmounted (the user is on Dashboard when the
+        // app backgrounds; sees Chat after resume).
+        .onChange(of: coordinator?.scenePhaseTick) { _, _ in
+            guard let phase = coordinator?.scenePhase else { return }
+            Task { await controller.handleScenePhase(phase) }
         }
         // Deliberately NOT tearing down the ACP session on .onDisappear.
         // `TabView` unmounts tab content when the user switches tabs
@@ -201,6 +219,9 @@ struct ChatView: View {
                         emptyState
                     }
                 }
+                if controller.vm.hasMoreHistory {
+                    loadEarlierButton
+                }
                 ForEach(controller.vm.messages) { msg in
                     MessageBubble(
                         message: msg,
@@ -247,6 +268,37 @@ struct ChatView: View {
         .scrollDismissesKeyboard(.interactively)
     }
 
+    /// "Load earlier messages" affordance pinned above the oldest
+    /// loaded bubble. Only rendered when `vm.hasMoreHistory == true`,
+    /// so it disappears organically once the user has paged back to
+    /// the start of the session.
+    @ViewBuilder
+    private var loadEarlierButton: some View {
+        Button {
+            Task { await controller.vm.loadEarlier() }
+        } label: {
+            HStack(spacing: 6) {
+                if controller.vm.isLoadingEarlier {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                } else {
+                    Image(systemName: "arrow.up.circle")
+                        .font(.caption)
+                }
+                Text(controller.vm.isLoadingEarlier ? "Loading earlier…" : "Load earlier messages")
+                    .font(.caption)
+            }
+            .foregroundStyle(ScarfColor.foregroundMuted)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.regularMaterial, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(controller.vm.isLoadingEarlier)
+        .frame(maxWidth: .infinity)
+        .padding(.top, 8)
+    }
+
     @ViewBuilder
     private var emptyState: some View {
         VStack(spacing: 8) {
@@ -290,6 +342,58 @@ struct ChatView: View {
         .padding(.top, 60)
     }
 
+    /// Top-of-screen banner for transient connection states. `.failed`
+    /// keeps using the existing full-screen overlay (so the user has
+    /// somewhere obvious to tap "Retry"); `.reconnecting` and
+    /// `.offline` are non-modal so the user can keep reading the
+    /// transcript while we work in the background.
+    @ViewBuilder
+    private var connectionBanner: some View {
+        switch controller.state {
+        case .reconnecting(let attempt, let total):
+            connectionBannerStrip(
+                text: "Reconnecting (\(attempt)/\(total))…",
+                tint: ScarfColor.warning,
+                showSpinner: true
+            )
+        case .offline(let reason):
+            connectionBannerStrip(
+                text: reason,
+                tint: ScarfColor.danger,
+                showSpinner: false
+            )
+        default:
+            EmptyView()
+        }
+    }
+
+    private func connectionBannerStrip(
+        text: String,
+        tint: Color,
+        showSpinner: Bool
+    ) -> some View {
+        HStack(spacing: 8) {
+            if showSpinner {
+                ProgressView()
+                    .scaleEffect(0.7)
+                    .tint(tint)
+            } else {
+                Image(systemName: "wifi.slash")
+                    .font(.caption)
+                    .foregroundStyle(tint)
+            }
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(tint)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(0.16))
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+
     @ViewBuilder
     /// Soft pill above the composer confirming a non-interruptive
     /// command was received (e.g. `/steer`). Auto-clears via the
@@ -325,6 +429,12 @@ struct ChatView: View {
             .focused($composerFocused)
             .onSubmit {
                 Task { await controller.send() }
+            }
+            // Persist the half-typed message across app suspensions
+            // and force-quits. Debounced inside `scheduleDraftSave`
+            // so we coalesce per-keystroke writes.
+            .onChange(of: controller.draft) { _, _ in
+                controller.scheduleDraftSave()
             }
             // Explicit dismiss-keyboard affordance, complementing the
             // interactive scroll-to-dismiss on the message list. iOS
@@ -551,6 +661,14 @@ final class ChatController {
         case idle
         case connecting
         case ready
+        /// Mid-recovery: the SSH exec channel died but the agent on
+        /// the remote may still be running. We're trying to reattach
+        /// via `session/resume` (or `session/load` as a fallback).
+        case reconnecting(attempt: Int, of: Int)
+        /// Network reachability is unsatisfied. Distinct from
+        /// `.failed` so the banner can stay tinted yellow ("we'll
+        /// retry") instead of red ("dead").
+        case offline(reason: String)
         case failed(String)
     }
 
@@ -574,11 +692,99 @@ final class ChatController {
     private let context: ServerContext
     private var client: ACPClient?
     private var eventTask: Task<Void, Never>?
+    private var healthMonitorTask: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
+    private var isHandlingDisconnect = false
+    private var pendingDraftSave: Task<Void, Never>?
+
+    /// Session id of the currently-active chat. Saved when state
+    /// reaches `.ready` and cleared on explicit `stop()` so a
+    /// user-initiated disconnect doesn't get auto-reconnected when
+    /// network/scene events fire later.
+    private var lastActiveSessionID: String?
+    /// Optional project working directory of the currently-active
+    /// session. Used as `cwd` on the recovery path so a project-
+    /// scoped session reconnects with the right scope.
+    private var lastProjectPath: String?
+
+    // Reconnect tuning — verbatim from the Mac implementation at
+    // scarf/Features/Chat/ViewModels/ChatViewModel.swift:563-693.
+    private static let maxReconnectAttempts = 5
+    private static let reconnectBaseDelay: UInt64 = 1_000_000_000   // 1s
+    private static let maxReconnectDelay: UInt64 = 16_000_000_000   // 16s
 
     private static let logger = Logger(
         subsystem: "com.scarf.ios",
         category: "ChatController"
     )
+
+    // MARK: - Draft persistence
+
+    private static let draftKeyPrefix = "scarf.chat.draft.v1"
+    private static let draftMaxAge: TimeInterval = 7 * 24 * 60 * 60   // 7 days
+
+    private static func draftKey(serverID: ServerID, sessionID: String?) -> String {
+        // `_no_session` covers the brief connecting window before
+        // `vm.setSessionId` lands. The TextField is disabled in that
+        // window today, so this slot is essentially never written —
+        // but the sentinel is here so the key is always well-formed.
+        "\(draftKeyPrefix).\(serverID.uuidString).\(sessionID ?? "_no_session")"
+    }
+
+    private static func draftTimestampKey(forKey key: String) -> String { key + ".ts" }
+
+    private func saveDraft() {
+        let key = Self.draftKey(serverID: context.id, sessionID: vm.sessionId)
+        let tsKey = Self.draftTimestampKey(forKey: key)
+        if draft.isEmpty {
+            UserDefaults.standard.removeObject(forKey: key)
+            UserDefaults.standard.removeObject(forKey: tsKey)
+        } else {
+            UserDefaults.standard.set(draft, forKey: key)
+            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: tsKey)
+        }
+    }
+
+    private func loadDraft() {
+        let key = Self.draftKey(serverID: context.id, sessionID: vm.sessionId)
+        if let saved = UserDefaults.standard.string(forKey: key), !saved.isEmpty {
+            draft = saved
+        }
+    }
+
+    private func clearStoredDraft() {
+        let key = Self.draftKey(serverID: context.id, sessionID: vm.sessionId)
+        UserDefaults.standard.removeObject(forKey: key)
+        UserDefaults.standard.removeObject(forKey: Self.draftTimestampKey(forKey: key))
+    }
+
+    /// Debounced draft save. The view layer hooks this off
+    /// `.onChange(of: controller.draft)` so per-keystroke writes are
+    /// coalesced into one UserDefaults flush per ~1s of typing.
+    func scheduleDraftSave() {
+        pendingDraftSave?.cancel()
+        pendingDraftSave = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.saveDraft()
+        }
+    }
+
+    /// One-shot janitor invoked at app launch. Removes draft slots
+    /// whose timestamp sidecar predates `draftMaxAge`. Cheap enough
+    /// to call synchronously — UserDefaults is in-memory at runtime.
+    static func pruneStaleDrafts(now: Date = Date()) {
+        let defaults = UserDefaults.standard
+        let cutoff = now.timeIntervalSince1970 - draftMaxAge
+        for key in defaults.dictionaryRepresentation().keys
+            where key.hasPrefix(draftKeyPrefix) && key.hasSuffix(".ts")
+        {
+            guard let ts = defaults.object(forKey: key) as? TimeInterval, ts < cutoff else { continue }
+            let baseKey = String(key.dropLast(3))   // strip ".ts"
+            defaults.removeObject(forKey: baseKey)
+            defaults.removeObject(forKey: key)
+        }
+    }
 
     init(context: ServerContext) {
         self.context = context
@@ -626,16 +832,10 @@ final class ChatController {
         // Start streaming ACP events into the view-model BEFORE we
         // send session/new, so the `available_commands_update`
         // notification that the server sends on session init is
-        // captured.
-        let stream = await client.events
-        eventTask = Task { [weak self] in
-            for await event in stream {
-                guard let self else { break }
-                await MainActor.run {
-                    self.vm.handleACPEvent(event)
-                }
-            }
-        }
+        // captured. Health monitor catches socket-level death the
+        // event-stream EOF wouldn't see (e.g., a hung remote read).
+        startACPEventLoop(client: client)
+        startHealthMonitor(client: client)
 
         // Create a fresh ACP session. `cwd` is the remote user's home
         // directory — Hermes defaults to that for tool scoping.
@@ -643,7 +843,10 @@ final class ChatController {
             let home = await context.resolvedUserHome()
             let sessionId = try await client.newSession(cwd: home)
             vm.setSessionId(sessionId)
+            loadDraft()
             state = .ready
+            lastActiveSessionID = sessionId
+            lastProjectPath = nil
         } catch {
             state = .failed(error.localizedDescription)
             await vm.recordACPFailure(error, client: client)
@@ -661,6 +864,7 @@ final class ChatController {
         let sessionId = vm.sessionId ?? ""
         guard !sessionId.isEmpty else { return }
         draft = ""
+        clearStoredDraft()
         vm.addUserMessage(text: text)
         // /steer is non-interruptive — the agent is still on its
         // current turn; the guidance applies after the next tool call.
@@ -721,13 +925,283 @@ final class ChatController {
     /// Stop the current session + tear down the SSH exec channel.
     /// Idempotent.
     func stop() async {
-        eventTask?.cancel()
-        eventTask = nil
+        eventTask?.cancel(); eventTask = nil
+        healthMonitorTask?.cancel(); healthMonitorTask = nil
+        reconnectTask?.cancel(); reconnectTask = nil
         if let client {
             await client.stop()
         }
         client = nil
         state = .idle
+        // Explicit user-initiated disconnect — clear the session
+        // memory so reachability/scenePhase events don't try to
+        // resurrect the dead chat.
+        lastActiveSessionID = nil
+        lastProjectPath = nil
+        isHandlingDisconnect = false
+    }
+
+    // MARK: - Reconnect machinery (Section 1)
+
+    /// Stream ACP events into the view-model. When the stream ends
+    /// without us cancelling it, the channel died; route into the
+    /// reconnect path. Direct port of Mac's `startACPEventLoop`
+    /// (scarf/Features/Chat/ViewModels/ChatViewModel.swift:563).
+    private func startACPEventLoop(client: ACPClient) {
+        eventTask = Task { @MainActor [weak self] in
+            let stream = await client.events
+            for await event in stream {
+                guard !Task.isCancelled else { break }
+                self?.vm.handleACPEvent(event)
+            }
+            // Stream ended — if we weren't explicitly cancelled the
+            // channel died (EOF on stdin/out, write to dead pipe,
+            // SSH socket gone). The Mac caller calls
+            // `handleConnectionDied`; we mirror that.
+            if !Task.isCancelled {
+                self?.handleConnectionDied()
+            }
+        }
+    }
+
+    /// 5-second heartbeat that catches dead channels which don't
+    /// explicitly EOF the stream (e.g., a hung SSH socket waiting
+    /// for the next chunk that never arrives). When `isHealthy`
+    /// returns false, route into the reconnect path. Mirrors Mac's
+    /// `startHealthMonitor`.
+    private func startHealthMonitor(client: ACPClient) {
+        healthMonitorTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard !Task.isCancelled else { break }
+                let healthy = await client.isHealthy
+                if !healthy {
+                    self?.handleConnectionDied()
+                    break
+                }
+            }
+        }
+    }
+
+    /// One-stop cleanup + reconnect dispatch. Idempotent — guarded by
+    /// `isHandlingDisconnect` so concurrent triggers (event-stream
+    /// EOF + health monitor + write failure) don't tear down the same
+    /// client twice.
+    private func handleConnectionDied() {
+        guard client != nil, !isHandlingDisconnect else { return }
+        isHandlingDisconnect = true
+        Self.logger.warning("ACP connection died")
+
+        // Capture any in-progress streaming text into a finalized
+        // message before we attempt to merge against the DB. The VM
+        // doesn't add a system "Connection lost" bubble — that would
+        // create a phantom message during reconnect.
+        vm.finalizeOnDisconnect()
+
+        let savedSessionId = vm.sessionId
+
+        // Tear down the dead client. The eventTask will be cancelled
+        // immediately; awaiting `stop()` on the dead client is the
+        // detached fire-and-forget pattern Mac uses (its `Task` block).
+        eventTask?.cancel(); eventTask = nil
+        healthMonitorTask?.cancel(); healthMonitorTask = nil
+        if let dead = client { Task { await dead.stop() } }
+        client = nil
+
+        guard let savedSessionId else {
+            // No session id to resume — surface the failure.
+            state = .failed("Connection lost")
+            isHandlingDisconnect = false
+            return
+        }
+        attemptReconnect(sessionId: savedSessionId)
+    }
+
+    /// React to an iOS scene-phase transition.
+    ///
+    /// `.background`: cancel the keepalive — iOS will suspend the
+    /// socket within ~30s anyway, and fighting it via background
+    /// tasks costs battery for marginal benefit (the agent's work is
+    /// persisted to state.db on the remote, so we recover on resume).
+    ///
+    /// `.active`: if we had a session running before suspension and
+    /// the channel is now unhealthy, route into the reconnect path
+    /// so the user sees fresh state without having to tap anything.
+    func handleScenePhase(_ phase: ScenePhase) async {
+        switch phase {
+        case .background:
+            healthMonitorTask?.cancel(); healthMonitorTask = nil
+        case .active:
+            // No session worth verifying.
+            guard let id = lastActiveSessionID else { return }
+            // Already mid-recovery — let it finish.
+            if case .reconnecting = state { return }
+            await verifyAndResume(sessionId: id)
+        case .inactive:
+            break       // brief: control center, banners, split-screen
+        @unknown default:
+            break
+        }
+    }
+
+    /// Probe the existing client's health on resume. If alive,
+    /// just re-arm the heartbeat; if dead, route into the reconnect
+    /// path (which preserves the session id and reconciles against
+    /// the DB).
+    private func verifyAndResume(sessionId: String) async {
+        if let client {
+            if await client.isHealthy {
+                startHealthMonitor(client: client)
+                return
+            }
+        }
+        handleConnectionDied()
+    }
+
+    /// React to a transition in `NetworkReachabilityService`. While
+    /// the device has no network, suppress reconnect attempts (they'd
+    /// just burn the 5-attempt budget against guaranteed failures);
+    /// when the network comes back, kick a fresh cycle if we're
+    /// stuck in `.failed` / `.offline` with a saved session id.
+    func handleReachabilityChange() async {
+        let satisfied = NetworkReachabilityService.shared.isSatisfied
+        if !satisfied {
+            // Stop the in-flight reconnect cycle — every attempt
+            // will fail until the link is back. We'll restart on
+            // the next `.satisfied` edge.
+            reconnectTask?.cancel(); reconnectTask = nil
+            if case .reconnecting = state {
+                state = .offline(reason: "No network")
+            }
+            return
+        }
+        // Network back. If we have a session worth restoring AND
+        // we're currently in a non-recoverable state, kick a fresh
+        // reconnect cycle.
+        guard let id = lastActiveSessionID else { return }
+        switch state {
+        case .offline, .failed:
+            attemptReconnect(sessionId: id)
+        default:
+            break
+        }
+    }
+
+    /// 5-attempt exponential-backoff reconnect targeting the same
+    /// session id. Tries `session/resume` first (correct semantics
+    /// for live recovery), falls back to `session/load` for older
+    /// remotes. NEVER `session/new` — that would lose the agent's
+    /// in-context conversation. After a successful reattach, calls
+    /// `vm.reconcileWithDB` so messages the agent wrote during the
+    /// outage become visible.
+    private func attemptReconnect(sessionId: String) {
+        reconnectTask?.cancel()
+        reconnectTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            for attempt in 1...Self.maxReconnectAttempts {
+                guard !Task.isCancelled else { return }
+                state = .reconnecting(attempt: attempt, of: Self.maxReconnectAttempts)
+
+                // Skip backoff on the first attempt so a quick
+                // recovery (e.g., a momentary SSH socket flap) feels
+                // instant. Subsequent attempts back off 1→2→4→8→16s.
+                if attempt > 1 {
+                    let delay = min(
+                        Self.reconnectBaseDelay * UInt64(1 << (attempt - 1)),
+                        Self.maxReconnectDelay
+                    )
+                    try? await Task.sleep(nanoseconds: delay)
+                    guard !Task.isCancelled else { return }
+                }
+
+                let client = ACPClient.forIOSApp(
+                    context: context,
+                    keyProvider: {
+                        let store = KeychainSSHKeyStore()
+                        guard let key = try await store.load() else {
+                            throw SSHKeyStoreError.backendFailure(
+                                message: "No SSH key in Keychain — re-run onboarding.",
+                                osStatus: nil
+                            )
+                        }
+                        return key
+                    }
+                )
+
+                do {
+                    try await client.start()
+
+                    // Project-scoped sessions reconnect with their
+                    // project path as cwd; everything else uses the
+                    // remote user's home directory.
+                    let cwd: String
+                    if let path = lastProjectPath {
+                        cwd = path
+                    } else {
+                        cwd = await context.resolvedUserHome()
+                    }
+
+                    let resolvedSessionId: String
+                    do {
+                        resolvedSessionId = try await client.resumeSession(cwd: cwd, sessionId: sessionId)
+                    } catch {
+                        Self.logger.info(
+                            "session/resume failed, trying session/load: \(error.localizedDescription, privacy: .public)"
+                        )
+                        resolvedSessionId = try await client.loadSession(cwd: cwd, sessionId: sessionId)
+                    }
+
+                    // Wire up the new client BEFORE merging messages
+                    // so any streaming chunks that arrive during the
+                    // reconcile land in the right place.
+                    self.client = client
+                    vm.acpStderrProvider = { [weak client] in
+                        await client?.recentStderr ?? ""
+                    }
+                    vm.setSessionId(resolvedSessionId)
+
+                    // Merge in-memory state (any local-only user
+                    // messages typed before the disconnect) with
+                    // whatever Hermes has persisted to state.db
+                    // since we last looked. This is what makes the
+                    // "agent kept working while you were locked"
+                    // case visible to the user.
+                    let countBefore = vm.messages.count
+                    await vm.reconcileWithDB(sessionId: resolvedSessionId)
+                    let added = vm.messages.count - countBefore
+                    if added > 0 {
+                        vm.transientHint = "Resynced \(added) new message\(added == 1 ? "" : "s")."
+                        Task { @MainActor [weak vm] in
+                            try? await Task.sleep(nanoseconds: 4_000_000_000)
+                            if vm?.transientHint?.hasPrefix("Resynced") == true {
+                                vm?.transientHint = nil
+                            }
+                        }
+                    }
+
+                    startACPEventLoop(client: client)
+                    startHealthMonitor(client: client)
+                    state = .ready
+                    lastActiveSessionID = resolvedSessionId
+
+                    isHandlingDisconnect = false
+                    Self.logger.info("Reconnected on attempt \(attempt)")
+                    return
+                } catch {
+                    Self.logger.warning(
+                        "Reconnect attempt \(attempt) failed: \(error.localizedDescription, privacy: .public)"
+                    )
+                    await client.stop()
+                    continue
+                }
+            }
+
+            // Exhausted all attempts. Surface a manual-recovery prompt.
+            guard !Task.isCancelled else { return }
+            state = .failed("Connection lost")
+            isHandlingDisconnect = false
+        }
     }
 
     /// User tapped "New chat". Stop, reset the VM, start again.
@@ -845,15 +1319,8 @@ final class ChatController {
             return
         }
 
-        let stream = await client.events
-        eventTask = Task { [weak self] in
-            for await event in stream {
-                guard let self else { break }
-                await MainActor.run {
-                    self.vm.handleACPEvent(event)
-                }
-            }
-        }
+        startACPEventLoop(client: client)
+        startHealthMonitor(client: client)
 
         do {
             // Use the project's path as cwd when provided; else the
@@ -866,7 +1333,10 @@ final class ChatController {
             }
             let sessionId = try await client.newSession(cwd: cwd)
             vm.setSessionId(sessionId)
+            loadDraft()
             state = .ready
+            lastActiveSessionID = sessionId
+            lastProjectPath = projectPath
 
             // If this was a project-scoped session, record the
             // attribution so Dashboard's Sessions tab can render the
@@ -976,15 +1446,8 @@ final class ChatController {
             return
         }
 
-        let stream = await client.events
-        eventTask = Task { [weak self] in
-            for await event in stream {
-                guard let self else { break }
-                await MainActor.run {
-                    self.vm.handleACPEvent(event)
-                }
-            }
-        }
+        startACPEventLoop(client: client)
+        startHealthMonitor(client: client)
 
         do {
             let home = await context.resolvedUserHome()
@@ -998,6 +1461,7 @@ final class ChatController {
                 resolvedID = try await client.loadSession(cwd: home, sessionId: sessionID)
             }
             vm.setSessionId(resolvedID)
+            loadDraft()
             // Pull the transcript out of state.db so the user sees
             // everything said up to now. Mirrors the Mac resume flow
             // (scarf/scarf/Features/Chat/ViewModels/ChatViewModel.swift:376).
@@ -1009,6 +1473,8 @@ final class ChatController {
                 acpSessionId: resolvedID == sessionID ? nil : resolvedID
             )
             state = .ready
+            lastActiveSessionID = resolvedID
+            lastProjectPath = resolved?.path
         } catch {
             state = .failed(error.localizedDescription)
             await vm.recordACPFailure(error, client: client)

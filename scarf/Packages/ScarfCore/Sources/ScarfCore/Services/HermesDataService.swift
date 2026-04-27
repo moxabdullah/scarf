@@ -61,6 +61,26 @@ public actor HermesDataService {
     /// instead of an empty Dashboard with no explanation.
     public private(set) var lastOpenError: String?
 
+    /// Modification date of the underlying state.db that backs the
+    /// currently-open connection. For local contexts this tracks the
+    /// live DB's mtime; for remote contexts it's the cached snapshot's
+    /// mtime — which equals "when did we last get fresh data."
+    public private(set) var lastSnapshotMtime: Date?
+
+    /// True when a `snapshotSQLite` pull failed and the open succeeded
+    /// against a previously-cached snapshot instead of a fresh one.
+    /// Views render a "Last updated X ago" affordance when this is set
+    /// alongside `lastOpenError`. Always `false` for local contexts.
+    public private(set) var isUsingStaleSnapshot: Bool = false
+
+    /// Convenience: how long ago the cached snapshot was written, when
+    /// we're using a stale snapshot. `nil` when the snapshot is fresh
+    /// or no mtime could be read.
+    public var staleAge: TimeInterval? {
+        guard isUsingStaleSnapshot, let m = lastSnapshotMtime else { return nil }
+        return Date().timeIntervalSince(m)
+    }
+
     public let context: ServerContext
     private let transport: any ServerTransport
 
@@ -70,6 +90,18 @@ public actor HermesDataService {
     }
 
     public func open() async -> Bool {
+        await openInternal(forceFresh: false)
+    }
+
+    /// Variant that refuses the stale-snapshot fallback. Used by call
+    /// sites that genuinely need post-write consistency — most notably
+    /// the chat session-history reload, where a stale snapshot would
+    /// hide messages the agent just streamed.
+    private func openStrict() async -> Bool {
+        await openInternal(forceFresh: true)
+    }
+
+    private func openInternal(forceFresh: Bool) async -> Bool {
         if db != nil { return true }
         let localPath: String
         if context.isRemote {
@@ -86,10 +118,30 @@ public actor HermesDataService {
                 )
                 localPath = url.path
                 lastOpenError = nil
+                isUsingStaleSnapshot = false
+                lastSnapshotMtime = mtime(at: url)
             } catch {
-                lastOpenError = humanize(error)
-                Self.logger.warning("snapshotSQLite failed: \(error.localizedDescription, privacy: .public)")
-                return false
+                // Fresh pull failed. If the caller demanded fresh data
+                // (`forceFresh: true`) OR there's no usable cache on
+                // disk, surface the error and bail. Otherwise serve
+                // the cached snapshot with `isUsingStaleSnapshot = true`
+                // so views can render a "Last updated X ago" banner.
+                if !forceFresh,
+                   let cached = transport.cachedSnapshotPath,
+                   FileManager.default.fileExists(atPath: cached.path)
+                {
+                    localPath = cached.path
+                    isUsingStaleSnapshot = true
+                    lastSnapshotMtime = mtime(at: cached)
+                    lastOpenError = humanize(error)   // user still sees why it's stale
+                    Self.logger.warning(
+                        "Using stale snapshot after pull failure: \(error.localizedDescription, privacy: .public)"
+                    )
+                } else {
+                    lastOpenError = humanize(error)
+                    Self.logger.warning("snapshotSQLite failed: \(error.localizedDescription, privacy: .public)")
+                    return false
+                }
             }
         } else {
             localPath = context.paths.stateDB
@@ -97,6 +149,8 @@ public actor HermesDataService {
                 lastOpenError = "Hermes state database not found at \(localPath)."
                 return false
             }
+            isUsingStaleSnapshot = false
+            lastSnapshotMtime = mtime(at: URL(fileURLWithPath: localPath))
         }
         // Remote snapshots are point-in-time copies that no one writes to;
         // opening them with `immutable=1` tells SQLite to skip WAL/SHM and
@@ -151,17 +205,27 @@ public actor HermesDataService {
         return desc
     }
 
-    /// Force a fresh snapshot pull + reopen. Used on session-load and in
-    /// any path that needs the UI to reflect writes Hermes just made.
-    /// Without this, remote snapshots would be frozen at the first `open()`
-    /// for the app's lifetime — new messages added to a resumed session
-    /// would never appear because the snapshot was pulled before they were
-    /// written. Local contexts pay essentially nothing: close+reopen on a
-    /// live DB is a no-op.
+    /// Close the current connection and re-open with a fresh snapshot
+    /// pull (when remote). When `forceFresh` is `false` (default) and
+    /// the snapshot pull fails, falls back to the cached snapshot —
+    /// `isUsingStaleSnapshot` is set so views can render a "Last
+    /// updated X ago" banner. Pass `forceFresh: true` from call sites
+    /// that genuinely need post-write consistency (chat session
+    /// history reload), where stale data would hide messages the
+    /// agent just streamed.
     @discardableResult
-    public func refresh() async -> Bool {
+    public func refresh(forceFresh: Bool = false) async -> Bool {
         close()
-        return await open()
+        return await openInternal(forceFresh: forceFresh)
+    }
+
+    /// Read the modification date of a local file. Returns `nil` if
+    /// the file is unreachable or has no mtime metadata. Used to
+    /// stamp `lastSnapshotMtime` so views can show "Last updated
+    /// X ago" without each one duplicating the FileManager dance.
+    private nonisolated func mtime(at url: URL) -> Date? {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return attrs?[.modificationDate] as? Date
     }
 
     public func close() {
@@ -294,6 +358,50 @@ public actor HermesDataService {
         return cols
     }
 
+    /// Bounded message fetch keyed by message id (monotonic per row,
+    /// safer than timestamp-based pagination because streaming chunk
+    /// timestamps can collide). Returns the most recent `limit`
+    /// messages older than `before` (when supplied) in chronological
+    /// (ASC) order ready to display. Pass `before: nil` for the
+    /// initial load — the DB returns the newest `limit` rows.
+    public func fetchMessages(
+        sessionId: String,
+        limit: Int,
+        before: Int? = nil
+    ) -> [HermesMessage] {
+        guard let db else { return [] }
+        let sql: String
+        if before != nil {
+            sql = "SELECT \(messageColumns) FROM messages WHERE session_id = ? AND id < ? ORDER BY id DESC LIMIT ?"
+        } else {
+            sql = "SELECT \(messageColumns) FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?"
+        }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, sessionId, -1, sqliteTransient)
+        if let before {
+            sqlite3_bind_int(stmt, 2, Int32(before))
+            sqlite3_bind_int(stmt, 3, Int32(limit))
+        } else {
+            sqlite3_bind_int(stmt, 2, Int32(limit))
+        }
+
+        var messages: [HermesMessage] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            messages.append(messageFromRow(stmt!))
+        }
+        // Caller wants chronological (oldest-first) order; the SELECT
+        // is DESC for the LIMIT to bite the newest rows, so reverse.
+        return messages.reversed()
+    }
+
+    /// Legacy unbounded fetch retained for one release cycle so any
+    /// out-of-tree consumers don't break. New code should use the
+    /// bounded `fetchMessages(sessionId:limit:before:)` variant —
+    /// snapshot loads on 1000+-message sessions stall the UI when
+    /// they materialize the whole history at once.
+    @available(*, deprecated, message: "Use fetchMessages(sessionId:limit:before:) instead.")
     public func fetchMessages(sessionId: String) -> [HermesMessage] {
         guard let db else { return [] }
         let sql = "SELECT \(messageColumns) FROM messages WHERE session_id = ? ORDER BY timestamp ASC"

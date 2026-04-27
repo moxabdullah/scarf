@@ -114,7 +114,7 @@ final class SessionsViewModel {
 
     func selectSession(_ session: HermesSession) async {
         selectedSession = session
-        messages = await dataService.fetchMessages(sessionId: session.id)
+        messages = await dataService.fetchMessages(sessionId: session.id, limit: HistoryPageSize.macSessionDetail)
         subagentSessions = await dataService.fetchSubagentSessions(parentId: session.id)
     }
 

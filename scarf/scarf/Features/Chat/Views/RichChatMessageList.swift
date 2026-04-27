@@ -15,6 +15,13 @@ struct RichChatMessageList: View {
     /// bubble's metadata footer can render the v2.5 stopwatch pill.
     /// Defaults empty so callers that don't care can omit it.
     var turnDurations: [Int: TimeInterval] = [:]
+    /// Show the "Load earlier messages" button at the top of the
+    /// transcript when the underlying session has more on-disk
+    /// history that hasn't been paged in yet. Hidden by default so
+    /// existing callers who haven't opted in see no UI change.
+    var hasMoreHistory: Bool = false
+    var isLoadingEarlier: Bool = false
+    var onLoadEarlier: (() -> Void)? = nil
 
     /// Scrolling strategy: plain `VStack` (not `LazyVStack`) plus
     /// `.defaultScrollAnchor(.bottom)`.
@@ -55,6 +62,30 @@ struct RichChatMessageList: View {
                         .frame(maxWidth: .infinity)
                         .containerRelativeFrame(.vertical)
                         .transition(.opacity)
+                    }
+
+                    if hasMoreHistory, let onLoadEarlier {
+                        Button {
+                            onLoadEarlier()
+                        } label: {
+                            HStack(spacing: 6) {
+                                if isLoadingEarlier {
+                                    ProgressView().scaleEffect(0.7)
+                                } else {
+                                    Image(systemName: "arrow.up.circle")
+                                        .font(.caption)
+                                }
+                                Text(isLoadingEarlier ? "Loading earlier…" : "Load earlier messages")
+                                    .font(.caption)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(.regularMaterial, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isLoadingEarlier)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
                     }
 
                     ForEach(groups) { group in

@@ -34,7 +34,10 @@ struct ChatTranscriptPane: View {
                 isWorking: richChat.isGenerating,
                 isLoadingSession: chatViewModel.isPreparingSession,
                 scrollTrigger: richChat.scrollTrigger,
-                turnDurations: richChat.turnDurations
+                turnDurations: richChat.turnDurations,
+                hasMoreHistory: richChat.hasMoreHistory,
+                isLoadingEarlier: richChat.isLoadingEarlier,
+                onLoadEarlier: { Task { await richChat.loadEarlier() } }
             )
 
             Divider()

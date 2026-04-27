@@ -339,6 +339,20 @@ public final class RichChatViewModel {
     /// The original CLI session ID when resuming a CLI session via ACP.
     /// Used to combine old CLI messages with new ACP messages.
     public private(set) var originSessionId: String?
+    /// Smallest DB id currently loaded for the *current session* (i.e.
+    /// `sessionId`). Drives `loadEarlier()`: page back with
+    /// `before: oldestLoadedMessageID`. `nil` when nothing has been
+    /// loaded yet or the session has no DB-persisted messages.
+    public private(set) var oldestLoadedMessageID: Int?
+    /// Whether the most recent fetch suggests there are more older
+    /// messages on disk that haven't been loaded into `messages` yet.
+    /// Set to `true` when the initial fetch returned exactly `limit`
+    /// rows (a strong hint the table has more). Drives the "Load
+    /// earlier" button visibility in chat views.
+    public private(set) var hasMoreHistory: Bool = false
+    /// Cleared during a `loadEarlier()` fetch so the UI can show a
+    /// spinner and we don't fan out duplicate page requests.
+    public private(set) var isLoadingEarlier: Bool = false
     private var nextLocalId = -1
     private var streamingAssistantText = ""
     private var streamingThinkingText = ""
@@ -382,6 +396,9 @@ public final class RichChatViewModel {
         lastKnownFingerprint = nil
         sessionId = nil
         originSessionId = nil
+        oldestLoadedMessageID = nil
+        hasMoreHistory = false
+        isLoadingEarlier = false
         isAgentWorking = false
         userSendPending = false
         resetTimestamp = Date()
@@ -875,12 +892,15 @@ public final class RichChatViewModel {
         let opened = await dataService.open()
         guard opened else { return }
 
-        var dbMessages = await dataService.fetchMessages(sessionId: sessionId)
+        // Reconnects don't generate hundreds of unseen messages, so a
+        // 200-row tail is plenty for the merge — and it keeps us from
+        // re-materializing 1000+ message sessions on every reconnect.
+        var dbMessages = await dataService.fetchMessages(sessionId: sessionId, limit: HistoryPageSize.reconcile)
 
         // If we have an origin session (CLI session continued via ACP),
         // include those messages too
         if let origin = originSessionId, origin != sessionId {
-            let originMessages = await dataService.fetchMessages(sessionId: origin)
+            let originMessages = await dataService.fetchMessages(sessionId: origin, limit: HistoryPageSize.reconcile)
             if !originMessages.isEmpty {
                 dbMessages = originMessages + dbMessages
                 dbMessages.sort { ($0.timestamp ?? .distantPast) < ($1.timestamp ?? .distantPast) }
@@ -925,10 +945,18 @@ public final class RichChatViewModel {
         // would have cached a stale copy — on resume we need whatever
         // Hermes has actually persisted since then, or the resumed session
         // will show only history up to the moment the snapshot was taken.
-        let opened = await dataService.refresh()
+        // `forceFresh: true` refuses the stale-snapshot fallback the data
+        // service grew in M11 — falling back here would silently hide
+        // messages the agent streamed during the user's offline window.
+        let opened = await dataService.refresh(forceFresh: true)
         guard opened else { return }
 
-        var allMessages = await dataService.fetchMessages(sessionId: sessionId)
+        let pageSize = HistoryPageSize.initial
+        var allMessages = await dataService.fetchMessages(sessionId: sessionId, limit: pageSize)
+        // The DB has more on-disk history when the initial fetch
+        // saturated the limit. The "Load earlier" affordance reads
+        // this flag.
+        var moreHistory = allMessages.count >= pageSize
         let session = await dataService.fetchSession(id: sessionId)
 
         // If the ACP session is different from the origin, load its messages too
@@ -936,10 +964,11 @@ public final class RichChatViewModel {
         if let acpId = acpSessionId, acpId != sessionId {
             originSessionId = sessionId
             self.sessionId = acpId
-            let acpMessages = await dataService.fetchMessages(sessionId: acpId)
+            let acpMessages = await dataService.fetchMessages(sessionId: acpId, limit: pageSize)
             if !acpMessages.isEmpty {
                 allMessages.append(contentsOf: acpMessages)
                 allMessages.sort { ($0.timestamp ?? .distantPast) < ($1.timestamp ?? .distantPast) }
+                moreHistory = moreHistory || acpMessages.count >= pageSize
             }
         }
 
@@ -947,6 +976,51 @@ public final class RichChatViewModel {
         currentSession = session
         let minId = allMessages.map(\.id).min() ?? 0
         nextLocalId = min(minId - 1, -1)
+        // Track the oldest loaded id from THIS session (not the merged
+        // origin) so `loadEarlier()` pages back through the live ACP
+        // session's history. Cross-session backfill (paging into the
+        // CLI origin) isn't supported in v1 — the merged 2× pageSize
+        // is enough headroom for the dashboard-resume case.
+        let currentSessionId = self.sessionId ?? sessionId
+        oldestLoadedMessageID = allMessages
+            .filter { $0.sessionId == currentSessionId }
+            .map(\.id)
+            .min()
+        hasMoreHistory = moreHistory
+        buildMessageGroups()
+    }
+
+    // MARK: - Load Earlier (pagination)
+
+    /// Page back through the current session's DB-persisted history
+    /// before `oldestLoadedMessageID` and prepend the page to
+    /// `messages`. Cheap on the SQLite side (`id` is the primary
+    /// key); the cost is the data-service `open()` round-trip on
+    /// remote contexts. `pageSize` defaults to the same 200-row
+    /// budget as the initial load.
+    public func loadEarlier(pageSize: Int = HistoryPageSize.initial) async {
+        guard !isLoadingEarlier, hasMoreHistory else { return }
+        guard let sessionId, let oldest = oldestLoadedMessageID else { return }
+        isLoadingEarlier = true
+        defer { isLoadingEarlier = false }
+
+        let opened = await dataService.open()
+        guard opened else { return }
+
+        let older = await dataService.fetchMessages(
+            sessionId: sessionId,
+            limit: pageSize,
+            before: oldest
+        )
+        guard !older.isEmpty else {
+            hasMoreHistory = false
+            return
+        }
+        messages.insert(contentsOf: older, at: 0)
+        oldestLoadedMessageID = older.first?.id
+        // If this fetch returned fewer than the page size we've hit
+        // the bottom of the table — no further pages worth fetching.
+        hasMoreHistory = older.count >= pageSize
         buildMessageGroups()
     }
 
@@ -990,7 +1064,7 @@ public final class RichChatViewModel {
         let fingerprint = await dataService.fetchMessageFingerprint(sessionId: sessionId)
 
         if fingerprint != lastKnownFingerprint {
-            let fetched = await dataService.fetchMessages(sessionId: sessionId)
+            let fetched = await dataService.fetchMessages(sessionId: sessionId, limit: HistoryPageSize.polling)
             let session = await dataService.fetchSession(id: sessionId)
             lastKnownFingerprint = fingerprint
 

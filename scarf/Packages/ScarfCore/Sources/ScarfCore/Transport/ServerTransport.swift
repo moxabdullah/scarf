@@ -90,6 +90,19 @@ public protocol ServerTransport: Sendable {
     /// `~/Library/Caches/scarf/<serverID>/state.db`, returning that URL.
     nonisolated func snapshotSQLite(remotePath: String) throws -> URL
 
+    /// Local filesystem URL where this transport caches its SQLite snapshot,
+    /// returned even when the remote is unreachable. Callers should
+    /// `FileManager.default.fileExists(atPath:)` before reading — the
+    /// transport can't atomically check existence and return the URL
+    /// in one step without TOCTOU. Local transports return `nil`
+    /// (their data is the live DB, not a cache).
+    ///
+    /// Used by `HermesDataService.open()` to fall back to the last
+    /// successful snapshot when a fresh `snapshotSQLite` call fails,
+    /// so the app keeps showing data with a "Last updated X ago"
+    /// affordance instead of a blank screen.
+    nonisolated var cachedSnapshotPath: URL? { get }
+
     // MARK: - Watching
 
     /// Observe changes to a set of paths and yield events when any of them

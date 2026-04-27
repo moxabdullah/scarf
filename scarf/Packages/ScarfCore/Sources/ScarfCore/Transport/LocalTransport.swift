@@ -247,6 +247,11 @@ public struct LocalTransport: ServerTransport {
         URL(fileURLWithPath: remotePath)
     }
 
+    /// Local transport reads the live DB directly — there's no cached
+    /// snapshot to fall back to (and no failure mode where falling back
+    /// would help, since a missing local file is missing both ways).
+    public var cachedSnapshotPath: URL? { nil }
+
     // MARK: - Watching
 
     #if canImport(Darwin)

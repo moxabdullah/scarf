@@ -31,6 +31,28 @@ final class ScarfGoCoordinator {
     /// `AppCoordinator.pendingProjectChat`.
     var pendingProjectChat: String?
 
+    /// Most-recent scene-phase value observed at the WindowGroup
+    /// level. Tab-specific view models (e.g. `ChatController`)
+    /// observe `scenePhaseTick` to react to transitions even when
+    /// they're on a non-foreground tab — `.onChange(of: ScenePhase)`
+    /// alone wouldn't fire for views that aren't on screen.
+    private(set) var scenePhase: ScenePhase = .active
+    private(set) var scenePhaseTick: Int = 0
+    /// Wallclock when we last observed `.background`. Used by tab
+    /// view-models to decide whether a quick `.active` transition is
+    /// worth a full re-verify (long suspensions warrant it; brief
+    /// notification-center peeks don't). `nil` until the first
+    /// background transition.
+    private(set) var lastBackgroundedAt: Date?
+
+    func setScenePhase(_ phase: ScenePhase) {
+        if phase == .background, scenePhase != .background {
+            lastBackgroundedAt = Date()
+        }
+        scenePhase = phase
+        scenePhaseTick &+= 1
+    }
+
     enum Tab: Hashable {
         case dashboard, projects, chat, skills, system
     }

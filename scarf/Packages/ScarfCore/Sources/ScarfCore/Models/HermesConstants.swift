@@ -27,6 +27,28 @@ public enum QueryDefaults: Sendable {
     public nonisolated static let defaultSilenceThreshold = 200
 }
 
+/// Page sizes for `HermesDataService.fetchMessages(sessionId:limit:before:)`.
+/// Centralized so iOS, Mac, and the polling code paths can pick a
+/// consistent budget — and so we have one knob to retune if perf
+/// concerns shift.
+public enum HistoryPageSize: Sendable {
+    /// Initial chat-history load: covers the vast majority of
+    /// sessions in one fetch while keeping the snapshot read bounded
+    /// for the rare 1000+-message session.
+    public nonisolated static let initial = 200
+    /// Reconnection reconcile against the DB. 200 rows is plenty —
+    /// disconnects don't generate hundreds of unseen messages.
+    public nonisolated static let reconcile = 200
+    /// Mac sessions detail view. Larger to reduce paging UX in the
+    /// desktop browser-style read; the desktop has the screen real
+    /// estate and memory headroom for it.
+    public nonisolated static let macSessionDetail = 500
+    /// Terminal-mode polling refresh. Same 500-row budget as Mac
+    /// detail; covers sessions long enough that the user is actively
+    /// scrolling but bounded to keep each poll tick cheap.
+    public nonisolated static let polling = 500
+}
+
 // MARK: - File Size Formatting
 
 public enum FileSizeUnit: Sendable {

@@ -63,6 +63,13 @@ struct ScarfIOSApp: App {
                     // Hermes gains a push sender.
                     await MainActor.run { NotificationRouter.shared.setUpOnLaunch() }
                 }
+                .task {
+                    // Drop chat drafts older than 7 days so the
+                    // UserDefaults plist doesn't grow unbounded across
+                    // years of use. Cheap; UserDefaults is already in
+                    // memory by the time we read keys.
+                    ChatController.pruneStaleDrafts()
+                }
                 // Clamp Dynamic Type at the scene root. ScarfGo is a
                 // developer tool that needs more density than Apple's
                 // .xxxLarge default, but we still scale from .xSmall
