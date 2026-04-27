@@ -50,8 +50,8 @@ final class RemoteDiagnosticsViewModel {
             case .hermesHomeConfigured:   return "Hermes home directory"
             case .hermesDirExists:        return "Hermes directory exists"
             case .hermesDirReadable:      return "Hermes directory readable"
-            case .configYAMLReadable:     return "config.yaml readable"
-            case .configYAMLContents:     return "config.yaml actually readable (content)"
+            case .configYAMLReadable:     return "config.yaml readable (optional)"
+            case .configYAMLContents:     return "config.yaml content (optional)"
             case .stateDBReadable:        return "state.db readable"
             case .sqlite3Installed:       return "sqlite3 binary installed on remote"
             case .sqlite3CanOpenStateDB:  return "sqlite3 can open state.db"
@@ -75,9 +75,13 @@ final class RemoteDiagnosticsViewModel {
             case .hermesDirReadable:
                 return "The SSH user can see `~/.hermes` but can't list it. Check permissions: `ls -ld ~/.hermes` on the remote — the SSH user needs at least `r-x`."
             case .configYAMLReadable, .configYAMLContents:
-                return "Scarf can't read `config.yaml`. This usually means the SSH user is different from the user Hermes runs as. Either (a) run Hermes as the SSH user, (b) `chmod a+r ~/.hermes/config.yaml`, or (c) configure Scarf to SSH as the Hermes user."
+                // Reached only when the file EXISTS but is unreadable —
+                // a real permission issue. The "file absent" case emits
+                // SKIP (Hermes v0.11+ creates config.yaml lazily, only
+                // when the user changes a setting from defaults).
+                return "`config.yaml` exists on the remote but the SSH user can't read it. Either (a) run Hermes as the SSH user, (b) `chmod a+r ~/.hermes/config.yaml`, or (c) configure Scarf to SSH as the Hermes user. If `config.yaml` is missing entirely, that's fine — Hermes only creates it when you change a setting from the defaults."
             case .stateDBReadable:
-                return "Scarf can't read `state.db` — Sessions, Activity, Dashboard stats all depend on this. Same fix pattern as config.yaml."
+                return "Scarf can't read `state.db` — Sessions, Activity, Dashboard stats all depend on this. Either (a) run Hermes as the SSH user, (b) `chmod a+r ~/.hermes/state.db`, or (c) configure Scarf to SSH as the Hermes user."
             case .sqlite3Installed:
                 return "Scarf pulls a snapshot of state.db via `sqlite3 .backup`, so sqlite3 must be installed on the remote AND visible to non-interactive SSH sessions. The probe sources `~/.zshenv` / `.zprofile` / `.bash_profile` / `.profile` and falls back to `/usr/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, and `/opt/local/bin` — if it's still not found, either install via your package manager (`sudo apt install sqlite3` / `sudo yum install sqlite` / `apk add sqlite`) or symlink the existing binary into a location the probe checks (e.g. `sudo ln -s /your/path/sqlite3 /usr/local/bin/sqlite3`)."
             case .sqlite3CanOpenStateDB:
@@ -92,10 +96,26 @@ final class RemoteDiagnosticsViewModel {
         }
     }
 
+    /// Tri-state probe outcome. `.skipped` covers checks that didn't
+    /// run because they aren't applicable (e.g. config.yaml absence on
+    /// a fresh Hermes v0.11+ install — the file is created lazily, so
+    /// missing is normal). UI renders skipped probes with a grey info
+    /// icon and excludes them from "X/Y failing" tallies.
+    enum ProbeStatus: Sendable, Equatable {
+        case pass
+        case fail
+        case skipped
+    }
+
     struct Probe: Identifiable, Sendable {
         let id: ProbeID
-        let passed: Bool
+        let status: ProbeStatus
         let detail: String
+
+        /// Back-compat for callers (Copy Full Report, view counters)
+        /// that still think in pass/fail. Skipped probes report `true`
+        /// so they don't count as failures.
+        var passed: Bool { status != .fail }
     }
 
     private(set) var probes: [Probe] = []
@@ -135,10 +155,10 @@ final class RemoteDiagnosticsViewModel {
             rawStderr = msg
             rawExitCode = -1
             probes = [
-                Probe(id: .connectivity, passed: false, detail: msg)
+                Probe(id: .connectivity, status: .fail, detail: msg)
             ] + ProbeID.allCases
                 .filter { $0 != .connectivity }
-                .map { Probe(id: $0, passed: false, detail: "(skipped — SSH didn't connect)") }
+                .map { Probe(id: $0, status: .fail, detail: "(skipped — SSH didn't connect)") }
         case .completed(let stdout, let stderr, let exitCode):
             rawStdout = stdout
             rawStderr = stderr
@@ -151,18 +171,37 @@ final class RemoteDiagnosticsViewModel {
         Self.logger.info("Diagnostics for \(self.context.displayName, privacy: .public) finished — \(self.passingCount)/\(self.probes.count) passing")
     }
 
-    /// Quick summary string, e.g. "9/14 passing". Used in the header.
+    /// Quick summary string. Skipped probes (e.g. config.yaml absent
+    /// on a fresh Hermes v0.11+ install) are excluded from the
+    /// denominator so the user sees "12/12 passing" instead of a
+    /// misleading "12/14 passing." When any probe is skipped we
+    /// append a parenthetical so it's still visible at a glance.
     var summary: String {
         guard !probes.isEmpty else { return "Not yet run." }
-        return "\(passingCount)/\(probes.count) checks passing"
+        let total = probes.filter { $0.status != .skipped }.count
+        var s = "\(passingCount)/\(total) checks passing"
+        if skippedCount > 0 {
+            s += " (\(skippedCount) optional skipped)"
+        }
+        return s
     }
 
     var passingCount: Int {
-        probes.filter { $0.passed }.count
+        probes.filter { $0.status == .pass }.count
     }
 
+    var skippedCount: Int {
+        probes.filter { $0.status == .skipped }.count
+    }
+
+    var failingCount: Int {
+        probes.filter { $0.status == .fail }.count
+    }
+
+    /// True iff every applicable probe passed — skipped probes don't
+    /// block the green-banner state because they're informational.
     var allPassed: Bool {
-        !probes.isEmpty && passingCount == probes.count
+        !probes.isEmpty && failingCount == 0
     }
 
     // MARK: - Script + parsing
@@ -210,21 +249,32 @@ final class RemoteDiagnosticsViewModel {
             emit hermesDirReadable FAIL "cannot read/enter $H (check perms on the dir)"
         fi
 
+        # config.yaml is OPTIONAL on Hermes v0.11+ — the file is created
+        # lazily when the user changes a setting from defaults. So a
+        # working fresh install is expected to have no config.yaml.
+        # The probe distinguishes:
+        #   PASS — file exists and is readable
+        #   SKIP — file is absent (informational, not a failure)
+        #   FAIL — file exists but the SSH user can't read it (real perm issue)
         if [ -r "$H/config.yaml" ]; then
             emit configYAMLReadable PASS ""
         else
             if [ -e "$H/config.yaml" ]; then
                 emit configYAMLReadable FAIL "exists but not readable by $user"
             else
-                emit configYAMLReadable FAIL "file does not exist"
+                emit configYAMLReadable SKIP "not present (Hermes creates it on first config change)"
             fi
         fi
 
-        if head -c 1 "$H/config.yaml" > /dev/null 2>&1; then
-            size=$(wc -c < "$H/config.yaml" 2>/dev/null | tr -d ' ')
-            emit configYAMLContents PASS "${size} bytes"
+        if [ -e "$H/config.yaml" ]; then
+            if head -c 1 "$H/config.yaml" > /dev/null 2>&1; then
+                size=$(wc -c < "$H/config.yaml" 2>/dev/null | tr -d ' ')
+                emit configYAMLContents PASS "${size} bytes"
+            else
+                emit configYAMLContents FAIL "cannot read file contents"
+            fi
         else
-            emit configYAMLContents FAIL "cannot read file contents"
+            emit configYAMLContents SKIP "not present (no content to read)"
         fi
 
         if [ -r "$H/state.db" ]; then
@@ -319,12 +369,18 @@ final class RemoteDiagnosticsViewModel {
             let parts = line.split(separator: "|", maxSplits: 2, omittingEmptySubsequences: false)
             guard parts.count == 3 else { continue }
             let key = String(parts[0]).trimmingCharacters(in: .whitespaces)
-            let status = String(parts[1]).trimmingCharacters(in: .whitespaces)
+            let statusRaw = String(parts[1]).trimmingCharacters(in: .whitespaces)
             let detail = String(parts[2]).trimmingCharacters(in: .whitespaces)
             guard let probe = ProbeID(rawValue: key) else { continue }
+            let status: ProbeStatus
+            switch statusRaw {
+            case "PASS": status = .pass
+            case "SKIP": status = .skipped
+            default:     status = .fail
+            }
             results[probe] = Probe(
                 id: probe,
-                passed: status == "PASS",
+                status: status,
                 detail: detail
             )
         }
@@ -342,7 +398,7 @@ final class RemoteDiagnosticsViewModel {
         }
 
         return ProbeID.allCases.map { id in
-            results[id] ?? Probe(id: id, passed: false, detail: fallbackDetail)
+            results[id] ?? Probe(id: id, status: .fail, detail: fallbackDetail)
         }
     }
 }

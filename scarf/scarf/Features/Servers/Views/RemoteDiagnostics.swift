@@ -93,8 +93,10 @@ struct RemoteDiagnosticsView: View {
 
     private func probeRow(_ probe: RemoteDiagnosticsViewModel.Probe) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: probe.passed ? "checkmark.circle.fill" : "xmark.circle.fill")
-                .foregroundStyle(probe.passed ? .green : .red)
+            // Tri-state icon: green check on pass, red x on fail, grey
+            // info-circle on skipped (the optional-and-absent state).
+            Image(systemName: iconName(for: probe.status))
+                .foregroundStyle(iconColor(for: probe.status))
                 .font(.title3)
                 .padding(.top, 2)
             VStack(alignment: .leading, spacing: 4) {
@@ -106,7 +108,7 @@ struct RemoteDiagnosticsView: View {
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
-                if !probe.passed, let hint = probe.id.failureHint {
+                if probe.status == .fail, let hint = probe.id.failureHint {
                     HStack(alignment: .top, spacing: 6) {
                         Image(systemName: "lightbulb")
                             .foregroundStyle(.yellow)
@@ -126,6 +128,22 @@ struct RemoteDiagnosticsView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+
+    private func iconName(for status: RemoteDiagnosticsViewModel.ProbeStatus) -> String {
+        switch status {
+        case .pass:    return "checkmark.circle.fill"
+        case .fail:    return "xmark.circle.fill"
+        case .skipped: return "info.circle"
+        }
+    }
+
+    private func iconColor(for status: RemoteDiagnosticsViewModel.ProbeStatus) -> Color {
+        switch status {
+        case .pass:    return .green
+        case .fail:    return .red
+        case .skipped: return .secondary
+        }
     }
 
     private var footer: some View {
@@ -189,10 +207,15 @@ struct RemoteDiagnosticsView: View {
         lines.append("Result: \(viewModel.summary)")
         lines.append("")
         for probe in viewModel.probes {
-            let mark = probe.passed ? "PASS" : "FAIL"
+            let mark: String
+            switch probe.status {
+            case .pass:    mark = "PASS"
+            case .fail:    mark = "FAIL"
+            case .skipped: mark = "SKIP"
+            }
             lines.append("[\(mark)] \(probe.id.title)")
             if !probe.detail.isEmpty { lines.append("    \(probe.detail)") }
-            if !probe.passed, let hint = probe.id.failureHint {
+            if probe.status == .fail, let hint = probe.id.failureHint {
                 lines.append("    hint: \(hint)")
             }
         }
