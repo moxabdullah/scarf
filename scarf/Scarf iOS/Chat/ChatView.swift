@@ -159,6 +159,21 @@ struct ChatView: View {
                 connectingOverlay
             }
         }
+        .sheet(isPresented: Binding(
+            get: { controller.modelPreflightReason != nil },
+            set: { newValue in
+                if !newValue { controller.cancelModelPreflight() }
+            }
+        )) {
+            IOSModelPreflightSheet(
+                reason: controller.modelPreflightReason ?? "",
+                serverDisplayName: controller.context.displayName,
+                onSelect: { model, provider in
+                    controller.confirmModelPreflight(model: model, provider: provider)
+                },
+                onCancel: { controller.cancelModelPreflight() }
+            )
+        }
         .sheet(item: Binding(
             get: { controller.vm.pendingPermission.map(PermissionWrapper.init) },
             set: { if $0 == nil { controller.vm.pendingPermission = nil } }
@@ -680,6 +695,28 @@ final class ChatController {
     private(set) var state: State = .idle
     var vm: RichChatViewModel
     var draft: String = ""
+
+    /// Set when chat-start is blocked because the active server's
+    /// `config.yaml` has no `model.default` / `model.provider`. ChatView
+    /// observes this to present an inline "pick a model" sheet — the
+    /// Mac picker UI doesn't ship on iOS today, so the iOS sheet
+    /// captures model + provider as text fields and persists them via
+    /// the same `hermes config set` path. Reset on cancel or after a
+    /// successful retry.
+    var modelPreflightReason: String?
+
+    /// Stash of the original chat-start intent while we wait for the
+    /// user to fill in a model. Captured by the gate inside `start`,
+    /// `startInternal`, `startResuming`; replayed verbatim once
+    /// `confirmModelPreflight` writes the chosen values to config.yaml
+    /// so the chat the user originally tried to open lands without
+    /// them having to click the project row again.
+    private enum PendingStart {
+        case fresh
+        case project(path: String, name: String)
+        case resume(sessionID: String)
+    }
+    private var pendingStartIntent: PendingStart?
     /// Display name of the Scarf project this session is scoped to,
     /// or nil for "quick chat" / global sessions. Surfaced as a
     /// subtitle under the "Chat" title in the nav bar so users can
@@ -694,7 +731,10 @@ final class ChatController {
     /// chip on the right side of the project context bar.
     private(set) var currentGitBranch: String?
 
-    private let context: ServerContext
+    /// Public so the surrounding `ChatView` can read `displayName`
+    /// when presenting sheets (e.g., the model preflight). Still
+    /// `let` — set once at init, never mutated after.
+    let context: ServerContext
     private var client: ACPClient?
     private var eventTask: Task<Void, Never>?
     private var healthMonitorTask: Task<Void, Never>?
@@ -796,11 +836,109 @@ final class ChatController {
         self.vm = RichChatViewModel(context: context)
     }
 
+    /// Pre-flight: returns true when `config.yaml` has both
+    /// `model.default` and `model.provider`. Returns false and stashes
+    /// the start intent so the preflight sheet can replay it after the
+    /// user picks a model. Reads via `context.readText` (transport-
+    /// aware) and parses with the ScarfCore YAML parser — same path
+    /// `IOSSettingsViewModel.load` uses, just synchronous because the
+    /// preflight runs before any `state = .connecting` UI transition.
+    private func passModelPreflight(intent: PendingStart) -> Bool {
+        let raw = context.readText(context.paths.configYAML) ?? ""
+        let config = HermesConfig(yaml: raw)
+        let result = ModelPreflight.check(config)
+        if result.isConfigured { return true }
+        pendingStartIntent = intent
+        modelPreflightReason = result.reason
+        return false
+    }
+
+    /// User confirmed model + provider in the preflight sheet. Persist
+    /// to `config.yaml` via `hermes config set` (transport-aware — runs
+    /// over SSH on the active server) and replay the original start
+    /// intent. iOS picker is a free-form text input today (matches the
+    /// Mac overlay-provider field for `nous`), so trust the user's
+    /// input — Hermes will surface a runtime error if the model isn't
+    /// valid for the provider.
+    func confirmModelPreflight(model: String, provider: String) {
+        let intent = pendingStartIntent
+        modelPreflightReason = nil
+        pendingStartIntent = nil
+
+        let trimmedModel = model.trimmingCharacters(in: .whitespaces)
+        let trimmedProvider = provider.trimmingCharacters(in: .whitespaces)
+        guard !trimmedProvider.isEmpty else { return }
+
+        let ctx = context
+        Task.detached { [weak self] in
+            // Same PATH-prefix trick `IOSSettingsViewModel.saveValue`
+            // uses so non-interactive shells find `hermes` even when
+            // it's in ~/.local/bin / /opt/homebrew/bin.
+            let hermes = ctx.paths.hermesBinary
+            let providerScript = """
+            PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.hermes/bin:$PATH" \
+            \(hermes) config set 'model.provider' '\(Self.escapeShellArg(trimmedProvider))'
+            """
+            let providerOK = (try? ctx.makeTransport().runProcess(
+                executable: "/bin/sh",
+                args: ["-c", providerScript],
+                stdin: nil,
+                timeout: 15
+            ))?.exitCode == 0
+            var modelOK = true
+            if providerOK, !trimmedModel.isEmpty {
+                let modelScript = """
+                PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.hermes/bin:$PATH" \
+                \(hermes) config set 'model.default' '\(Self.escapeShellArg(trimmedModel))'
+                """
+                modelOK = (try? ctx.makeTransport().runProcess(
+                    executable: "/bin/sh",
+                    args: ["-c", modelScript],
+                    stdin: nil,
+                    timeout: 15
+                ))?.exitCode == 0
+            }
+
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                if providerOK, modelOK, let intent {
+                    Task { @MainActor in
+                        switch intent {
+                        case .fresh:
+                            await self.start()
+                        case .project(let path, let name):
+                            await self.start(projectPath: path, projectName: name)
+                        case .resume(let id):
+                            await self.startResuming(sessionID: id)
+                        }
+                    }
+                } else if !(providerOK && modelOK) {
+                    self.state = .failed("Couldn't save model+provider to config.yaml.")
+                }
+            }
+        }
+    }
+
+    /// Single-quote escape a shell argument. Handles embedded single
+    /// quotes via the standard `'"'"'` trick. Mirrors the helper on
+    /// `IOSSettingsViewModel`. `nonisolated static` so the
+    /// `Task.detached` body can call it without a `self` capture and
+    /// without hopping back to the MainActor.
+    nonisolated private static func escapeShellArg(_ s: String) -> String {
+        s.replacingOccurrences(of: "'", with: "'\"'\"'")
+    }
+
+    func cancelModelPreflight() {
+        modelPreflightReason = nil
+        pendingStartIntent = nil
+    }
+
     /// Open the SSH exec channel, send ACP `initialize`, then
     /// `session/new` — so that by the time `state == .ready` the user
     /// can type and hit send immediately.
     func start() async {
         if state == .connecting || state == .ready { return }
+        guard passModelPreflight(intent: .fresh) else { return }
         state = .connecting
         vm.reset()
         let client = ACPClient.forIOSApp(
@@ -1297,6 +1435,13 @@ final class ChatController {
         projectName: String?
     ) async {
         if state == .connecting || state == .ready { return }
+        let intent: PendingStart
+        if let projectPath, let projectName {
+            intent = .project(path: projectPath, name: projectName)
+        } else {
+            intent = .fresh
+        }
+        guard passModelPreflight(intent: intent) else { return }
         state = .connecting
         let client = ACPClient.forIOSApp(
             context: context,
@@ -1380,6 +1525,7 @@ final class ChatController {
     /// to `session/load` if the remote doesn't support `session/resume`
     /// (Hermes < 0.9.x).
     func startResuming(sessionID: String) async {
+        guard passModelPreflight(intent: .resume(sessionID: sessionID)) else { return }
         await stop()
         vm.reset()
         // Clear eagerly so a lingering project name from a prior
@@ -1978,6 +2124,76 @@ private struct PermissionSheet: View {
             .navigationTitle("Agent permission")
             .navigationBarTitleDisplayMode(.inline)
         }
+    }
+}
+
+/// iOS preflight sheet for the model + provider on a server whose
+/// `config.yaml` is missing them. The Mac picker (`ModelPickerSheet`)
+/// doesn't ship in the iOS target — the catalog UI is Mac-only today —
+/// so this is a pair of `TextField`s plus a hint pointing at common
+/// formats. Confirms via the same `setModelAndProvider` path the Mac
+/// preflight uses, so persistence + replay logic stays single-sourced
+/// in `ChatController.confirmModelPreflight`.
+private struct IOSModelPreflightSheet: View {
+    let reason: String
+    let serverDisplayName: String
+    let onSelect: (_ model: String, _ provider: String) -> Void
+    let onCancel: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var model: String = ""
+    @State private var provider: String = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text(reasonLine)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Section("Provider") {
+                    TextField("e.g. anthropic, nous, openai", text: $provider)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                Section("Model") {
+                    TextField("e.g. claude-sonnet-4.6, hermes-3", text: $model)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Text("Hermes will pass these through verbatim. Leave model blank if you're using Nous Portal — Hermes picks its default.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Pick a model")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") {
+                        onCancel()
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Save & Start") {
+                        let p = provider.trimmingCharacters(in: .whitespaces)
+                        let m = model.trimmingCharacters(in: .whitespaces)
+                        guard !p.isEmpty else { return }
+                        onSelect(m, p)
+                        dismiss()
+                    }
+                    .disabled(provider.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+    }
+
+    private var reasonLine: String {
+        let suffix = "Scarf will save these to `config.yaml` on \(serverDisplayName) and start the chat."
+        guard !reason.isEmpty else { return suffix }
+        return "\(reason) \(suffix)"
     }
 }
 

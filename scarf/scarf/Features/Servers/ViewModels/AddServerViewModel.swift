@@ -17,6 +17,10 @@ final class AddServerViewModel {
     var identityFile: String = ""
     /// Override for `~/.hermes` on the remote. Empty = default.
     var remoteHome: String = ""
+    /// Override for the parent dir under which template installs land on
+    /// this host. Empty = default (`~/projects`). Created on first install
+    /// if missing.
+    var projectsRoot: String = ""
 
     var isTesting: Bool = false
     /// Outcome of the most recent Test Connection run. `nil` = not yet run.
@@ -44,6 +48,7 @@ final class AddServerViewModel {
             port: Int(port),
             identityFile: nonEmpty(identityFile),
             remoteHome: nonEmpty(remoteHome),
+            projectsRoot: nonEmpty(projectsRoot),
             hermesBinaryHint: nil
         )
     }

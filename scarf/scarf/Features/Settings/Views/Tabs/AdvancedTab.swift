@@ -1,5 +1,7 @@
+import AppKit
 import SwiftUI
 import ScarfCore
+import UniformTypeIdentifiers
 
 /// Advanced tab — network, compression, checkpoints, logging, delegation, file read cap,
 /// cron wrap, config diagnostics, backup/restore, paths, raw config.
@@ -7,7 +9,8 @@ struct AdvancedTab: View {
     @Bindable var viewModel: SettingsViewModel
     @State private var showRawConfig = false
     @State private var showRestoreConfirm = false
-    @State private var pendingRestoreURL: URL?
+    @State private var pendingRestorePath: String?
+    @State private var showRemoteRestoreSheet = false
     @State private var diagnosticsOutput: String = ""
     @State private var showDiagnostics = false
 
@@ -111,9 +114,17 @@ struct AdvancedTab: View {
                 .controlSize(.small)
                 .disabled(viewModel.backupInProgress)
                 Button {
-                    if let url = viewModel.presentRestorePicker() {
-                        pendingRestoreURL = url
-                        showRestoreConfirm = true
+                    if viewModel.context.isRemote {
+                        // The backup zip lives on the remote (that's where
+                        // `hermes backup` ran). NSOpenPanel can only browse
+                        // the user's Mac, so present a remote-path input
+                        // sheet instead.
+                        showRemoteRestoreSheet = true
+                    } else {
+                        if let path = pickLocalBackupZip() {
+                            pendingRestorePath = path
+                            showRestoreConfirm = true
+                        }
                     }
                 } label: {
                     Label("Restore…", systemImage: "arrow.up.doc")
@@ -131,15 +142,40 @@ struct AdvancedTab: View {
         }
         .confirmationDialog("Restore from backup?", isPresented: $showRestoreConfirm) {
             Button("Restore", role: .destructive) {
-                if let url = pendingRestoreURL {
-                    viewModel.runRestore(from: url)
+                if let path = pendingRestorePath {
+                    viewModel.runRestore(fromPath: path)
                 }
-                pendingRestoreURL = nil
+                pendingRestorePath = nil
             }
-            Button("Cancel", role: .cancel) { pendingRestoreURL = nil }
+            Button("Cancel", role: .cancel) { pendingRestorePath = nil }
         } message: {
-            Text("This will overwrite files under ~/.hermes/ with the archive contents.")
+            Text("This will overwrite files under \(viewModel.context.paths.home) with the archive contents.")
         }
+        .sheet(isPresented: $showRemoteRestoreSheet) {
+            RemoteBackupPathSheet(
+                context: viewModel.context,
+                onCancel: { showRemoteRestoreSheet = false },
+                onConfirm: { path in
+                    showRemoteRestoreSheet = false
+                    pendingRestorePath = path
+                    showRestoreConfirm = true
+                }
+            )
+        }
+    }
+
+    /// NSOpenPanel for local backup zip. Lifted from
+    /// `SettingsViewModel.presentRestorePicker` — kept in the view layer
+    /// because it's a UI concern that has no business on the VM.
+    private func pickLocalBackupZip() -> String? {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.zip]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a Hermes backup archive to restore"
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        return url.path
     }
 
     private var pathsSection: some View {
@@ -176,5 +212,117 @@ struct AdvancedTab: View {
                     .clipShape(RoundedRectangle(cornerRadius: 6))
             }
         }
+    }
+}
+
+/// Remote-backup-path picker. NSOpenPanel can only browse the user's
+/// Mac, which is the wrong host for a remote restore — `hermes backup`
+/// produced the zip on the remote, so the path the user wants is on
+/// the remote too. This sheet takes a remote path string + verifies
+/// it via `transport.fileExists` before handing it back to the
+/// caller. Future iteration: add an "Upload local zip first" path so
+/// users can restore from a backup that lives on this Mac.
+private struct RemoteBackupPathSheet: View {
+    let context: ServerContext
+    let onCancel: () -> Void
+    let onConfirm: (String) -> Void
+
+    @State private var path: String = ""
+    @State private var verification: Verification = .idle
+
+    private enum Verification: Equatable {
+        case idle
+        case verifying
+        case ok
+        case warn(String)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Restore from remote backup")
+                .font(.headline)
+            Text("Enter the path to a Hermes backup `.zip` on \(context.displayName). Hermes ran the backup there, so the file lives on the remote — Scarf can't browse the remote from a local file picker.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                TextField("e.g. ~/.hermes-backups/hermes-2026-04-28.zip", text: $path)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                    .onChange(of: path) { _, _ in
+                        if verification != .idle { verification = .idle }
+                    }
+                Button("Verify") { Task { await verify() } }
+                    .disabled(path.trimmingCharacters(in: .whitespaces).isEmpty
+                              || verification == .verifying)
+            }
+            verificationBadge
+            HStack {
+                Button("Cancel") { onCancel() }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Restore…") {
+                    let trimmed = path.trimmingCharacters(in: .whitespaces)
+                    guard !trimmed.isEmpty else { return }
+                    onConfirm(trimmed)
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(path.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+    }
+
+    @ViewBuilder
+    private var verificationBadge: some View {
+        switch verification {
+        case .idle:
+            EmptyView()
+        case .verifying:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Checking on \(context.displayName)…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .ok:
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Text("File found on \(context.displayName).")
+                    .font(.caption)
+            }
+        case .warn(let detail):
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(detail).font(.caption)
+            }
+        }
+    }
+
+    private func verify() async {
+        let trimmed = path.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        verification = .verifying
+        let snapshot = context
+        let result: Verification = await Task.detached {
+            let transport = snapshot.makeTransport()
+            guard transport.fileExists(trimmed) else {
+                return .warn("Path doesn't exist on \(snapshot.displayName).")
+            }
+            guard let stat = transport.stat(trimmed) else {
+                return .warn("Found, but couldn't stat — check permissions.")
+            }
+            if stat.isDirectory {
+                return .warn("Path is a directory, not a file. Restore expects a `.zip` archive.")
+            }
+            if !trimmed.lowercased().hasSuffix(".zip") {
+                return .warn("File found, but extension isn't `.zip`. Restore expects a Hermes backup archive.")
+            }
+            return .ok
+        }.value
+        verification = result
     }
 }

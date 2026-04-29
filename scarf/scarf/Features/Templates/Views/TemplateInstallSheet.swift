@@ -65,28 +65,36 @@ struct TemplateInstallSheet: View {
     }
 
     private var pickParentView: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if let manifest = viewModel.inspection?.manifest {
+        ParentDirectoryStep(
+            context: viewModel.context,
+            templateID: viewModel.inspection?.manifest.id,
+            header: parentStepHeader(),
+            onCancel: {
+                viewModel.cancel()
+                dismiss()
+            },
+            onContinue: { parentDir in
+                viewModel.pickParentDirectory(parentDir)
+            }
+        )
+    }
+
+    /// Builds the manifest banner that sits above the parent-directory
+    /// picker. Returned as `AnyView` so `ParentDirectoryStep` can stay
+    /// non-generic and `pickParentView` doesn't have to bubble its
+    /// generics back up the stack. Empty when inspection is still in
+    /// flight.
+    private func parentStepHeader() -> AnyView {
+        guard let manifest = viewModel.inspection?.manifest else {
+            return AnyView(EmptyView())
+        }
+        return AnyView(
+            VStack(alignment: .leading, spacing: 0) {
                 manifestHeader(manifest)
                 Divider()
+                    .padding(.top, 8)
             }
-            Text("Where should this project live?")
-                .scarfStyle(.headline)
-            Text("Scarf will create a new folder inside the directory you pick, named after the template id.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Spacer()
-            HStack {
-                Button("Cancel") {
-                    viewModel.cancel()
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-                Spacer()
-                Button("Choose Folder…") { chooseParentDirectory() }
-                    .keyboardShortcut(.defaultAction)
-            }
-        }
+        )
     }
 
     /// Configure step for schemaful templates. Inlines
@@ -417,17 +425,191 @@ struct TemplateInstallSheet: View {
         .padding()
     }
 
-    // MARK: - Actions
+}
 
-    private func chooseParentDirectory() {
+/// Parent-directory picker step. Uses the active `ServerContext` so a
+/// remote install never opens an `NSOpenPanel` against the local Mac
+/// filesystem — the panel's choices are useless when the project lives
+/// on the remote host. Mirrors the `AddProjectSheet` pattern in
+/// `ProjectsView`: text input + Verify (remote) or Browse… (local), an
+/// idle/verifying/ok/warn badge for remote feedback, and a Continue
+/// button that hands the chosen path back via `onContinue`.
+///
+/// **Bootstrap.** The path is allowed to not yet exist — the installer
+/// runs `transport.createDirectory(_:)` on the parent dir at install
+/// time (`mkdir -p` / `withIntermediateDirectories: true`). The Verify
+/// badge surfaces "doesn't exist" as a warn rather than blocking
+/// Continue, so a fresh remote host with no `~/projects` still
+/// completes the install.
+private struct ParentDirectoryStep: View {
+    let context: ServerContext
+    let templateID: String?
+    let header: AnyView
+    let onCancel: () -> Void
+    let onContinue: (String) -> Void
+
+    @State private var parentPath: String
+    @State private var remoteVerification: RemoteVerification = .idle
+
+    init(
+        context: ServerContext,
+        templateID: String?,
+        header: AnyView,
+        onCancel: @escaping () -> Void,
+        onContinue: @escaping (String) -> Void
+    ) {
+        self.context = context
+        self.templateID = templateID
+        self.header = header
+        self.onCancel = onCancel
+        self.onContinue = onContinue
+        self._parentPath = State(initialValue: context.defaultProjectsRoot)
+    }
+
+    private enum RemoteVerification: Equatable {
+        case idle
+        case verifying
+        case ok(String)
+        case warn(String)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            header
+            Text("Where should this project live?")
+                .scarfStyle(.headline)
+            Text(installPreviewCaption)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            pathInputRow
+            if context.isRemote {
+                Text("Path on \(context.displayName) — Scarf creates it on first install if missing.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                verificationBadge
+            }
+            Spacer()
+            footer
+        }
+    }
+
+    private var installPreviewCaption: String {
+        let trimmedPath = parentPath.trimmingCharacters(in: .whitespaces)
+        let parentDisplay = trimmedPath.isEmpty ? "<parent>" : trimmedPath
+        let slug = templateID ?? "<template-id>"
+        return "Project will be installed at \(parentDisplay)/\(slug) on \(context.displayName)."
+    }
+
+    @ViewBuilder
+    private var pathInputRow: some View {
+        HStack {
+            TextField("Parent directory", text: $parentPath)
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled()
+                .onChange(of: parentPath) { _, _ in
+                    if remoteVerification != .idle {
+                        remoteVerification = .idle
+                    }
+                }
+            if context.isRemote {
+                Button("Verify") { Task { await verifyRemotePath() } }
+                    .disabled(parentPath.trimmingCharacters(in: .whitespaces).isEmpty
+                              || remoteVerification == .verifying)
+            } else {
+                Button("Browse…") { browseLocalDirectory() }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var verificationBadge: some View {
+        switch remoteVerification {
+        case .idle:
+            EmptyView()
+        case .verifying:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Checking on \(context.displayName)…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .ok(let detail):
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(ScarfColor.success)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+            }
+        case .warn(let detail):
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(ScarfColor.warning)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+            }
+        }
+    }
+
+    private var footer: some View {
+        HStack {
+            Button("Cancel") { onCancel() }
+                .keyboardShortcut(.cancelAction)
+            Spacer()
+            Button("Continue") {
+                let trimmed = parentPath.trimmingCharacters(in: .whitespaces)
+                guard !trimmed.isEmpty else { return }
+                onContinue(trimmed)
+            }
+            .keyboardShortcut(.defaultAction)
+            .disabled(parentPath.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+    }
+
+    private func browseLocalDirectory() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.prompt = String(localized: "Choose Parent Folder")
+        let trimmed = parentPath.trimmingCharacters(in: .whitespaces)
+        if !trimmed.isEmpty {
+            let expanded = (trimmed as NSString).expandingTildeInPath
+            if FileManager.default.fileExists(atPath: expanded) {
+                panel.directoryURL = URL(fileURLWithPath: expanded)
+            }
+        }
         if panel.runModal() == .OK, let url = panel.url {
-            viewModel.pickParentDirectory(url.path)
+            parentPath = url.path
         }
     }
 
+    /// Verify the entered path on the remote via the SSH transport's
+    /// `stat`. Mirrors `AddProjectSheet.verifyRemotePath`. A missing
+    /// directory is reported as a *warn*, not an error — Continue is
+    /// still enabled because the installer's `mkdir -p` creates the
+    /// parent on first install.
+    private func verifyRemotePath() async {
+        let path = parentPath.trimmingCharacters(in: .whitespaces)
+        guard !path.isEmpty, context.isRemote else { return }
+        remoteVerification = .verifying
+        let snapshot = context
+        let result: RemoteVerification = await Task.detached {
+            let transport = snapshot.makeTransport()
+            guard transport.fileExists(path) else {
+                return .warn("Path doesn't exist on \(snapshot.displayName) — Scarf will create it on install.")
+            }
+            guard let stat = transport.stat(path) else {
+                return .warn("Found, but couldn't stat — check parent directory permissions.")
+            }
+            if stat.isDirectory {
+                return .ok("Directory exists on \(snapshot.displayName).")
+            } else {
+                return .warn("Path is a file, not a directory. Project paths must be directories.")
+            }
+        }.value
+        remoteVerification = result
+    }
 }

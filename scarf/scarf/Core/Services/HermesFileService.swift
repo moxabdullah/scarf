@@ -1500,6 +1500,42 @@ struct HermesFileService: Sendable {
         return false
     }
 
+    /// Persist the primary model + provider to `config.yaml` in one call.
+    /// Used by the chat-start preflight when the user picks a model from
+    /// the picker sheet — we need to write both keys before re-attempting
+    /// `client.start()`. Wraps two `hermes config set` invocations because
+    /// Hermes doesn't expose a combined "set model" command.
+    ///
+    /// Returns `true` only if both writes succeed. If the second write
+    /// fails the first is left in place — `model.default` without a
+    /// matching `model.provider` is no worse than the all-empty state we
+    /// started in, and the next preflight pass will re-prompt anyway.
+    @discardableResult
+    nonisolated func setModelAndProvider(model: String, provider: String) -> Bool {
+        let trimmedModel = model.trimmingCharacters(in: .whitespaces)
+        let trimmedProvider = provider.trimmingCharacters(in: .whitespaces)
+        guard !trimmedProvider.isEmpty else { return false }
+
+        let providerResult = runHermesCLI(args: ["config", "set", "model.provider", trimmedProvider], timeout: 30)
+        guard providerResult.exitCode == 0 else {
+            Self.logger.warning("hermes config set model.provider failed: \(providerResult.output, privacy: .public)")
+            return false
+        }
+        // Subscription-gated overlay providers (Nous Portal) accept an
+        // empty model — Hermes picks its own default. Skip the model
+        // write in that case rather than persisting the empty string,
+        // which Hermes would treat as "unset" and the preflight would
+        // catch again on the next start.
+        guard !trimmedModel.isEmpty else { return true }
+
+        let modelResult = runHermesCLI(args: ["config", "set", "model.default", trimmedModel], timeout: 30)
+        guard modelResult.exitCode == 0 else {
+            Self.logger.warning("hermes config set model.default failed: \(modelResult.output, privacy: .public)")
+            return false
+        }
+        return true
+    }
+
     @discardableResult
     nonisolated func runHermesCLI(args: [String], timeout: TimeInterval = 60, stdinInput: String? = nil) -> (exitCode: Int32, output: String) {
         // Resolve the executable path — for remote, prefer the cached

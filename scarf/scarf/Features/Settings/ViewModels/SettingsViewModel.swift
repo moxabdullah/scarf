@@ -271,10 +271,16 @@ final class SettingsViewModel {
         }
     }
 
-    func runRestore(from url: URL) {
+    /// Restore from a backup `.zip`. The path may be local (the user picked
+    /// it via `NSOpenPanel` on a local context) or remote (the user typed it
+    /// in the remote-path sheet). Either way, the call goes through
+    /// `fileService.runHermesCLI`, which is transport-aware — for an SSH
+    /// context the `hermes import <path>` command runs on the remote shell
+    /// where `<path>` is a remote filesystem path.
+    func runRestore(fromPath path: String) {
         backupInProgress = true
         Task.detached { [fileService] in
-            let result = fileService.runHermesCLI(args: ["import", url.path], timeout: 300)
+            let result = fileService.runHermesCLI(args: ["import", path], timeout: 300)
             await MainActor.run {
                 self.backupInProgress = false
                 self.saveMessage = result.exitCode == 0 ? "Restore complete — restart Scarf" : "Restore failed"
@@ -297,17 +303,6 @@ final class SettingsViewModel {
         guard let match = regex.firstMatch(in: output, range: range),
               let r = Range(match.range(at: 1), in: output) else { return nil }
         return String(output[r])
-    }
-
-    func presentRestorePicker() -> URL? {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.zip]
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.message = "Choose a Hermes backup archive to restore"
-        guard panel.runModal() == .OK, let url = panel.url else { return nil }
-        return url
     }
 
     func openConfigInEditor() {

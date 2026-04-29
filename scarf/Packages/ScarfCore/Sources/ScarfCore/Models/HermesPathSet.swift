@@ -81,6 +81,12 @@ public struct HermesPathSet: Sendable, Hashable {
     /// Maps Hermes session IDs to the Scarf project path a chat was
     /// started for. Scarf-owned; Hermes never touches this file.
     public nonisolated var sessionProjectMap: String { scarfDir + "/session_project_map.json" }
+    /// Cached list of available Nous Portal models. Populated by
+    /// `NousModelCatalogService` from `GET https://inference-api.nousresearch.com/v1/models`
+    /// using the bearer token in `auth.json`. Refreshed on a 24h TTL or
+    /// on user request from the model picker. Survives offline runs so
+    /// the picker still has something to render.
+    public nonisolated var nousModelsCache: String { scarfDir + "/nous_models_cache.json" }
     public nonisolated var mcpTokensDir: String { home + "/mcp-tokens" }
 
     // MARK: - Binary resolution

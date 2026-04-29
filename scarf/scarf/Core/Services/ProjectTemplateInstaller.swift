@@ -21,6 +21,7 @@ struct ProjectTemplateInstaller: Sendable {
     /// to the registry so the caller can set `AppCoordinator.selectedProjectName`.
     @discardableResult
     nonisolated func install(plan: TemplateInstallPlan) throws -> ProjectEntry {
+        try bootstrapProjectsRoot(plan: plan)
         try preflight(plan: plan)
         try createProjectFiles(plan: plan)
         try createSkillsFiles(plan: plan)
@@ -30,6 +31,24 @@ struct ProjectTemplateInstaller: Sendable {
         try writeLockFile(plan: plan, cronJobNames: cronJobNames)
         Self.logger.info("installed template \(plan.manifest.id, privacy: .public) v\(plan.manifest.version, privacy: .public) into \(plan.projectDir, privacy: .public)")
         return entry
+    }
+
+    // MARK: - Bootstrap
+
+    /// Idempotently `mkdir -p` the parent directory so a fresh remote
+    /// host (or a local user with no `~/Projects`) can complete the
+    /// first install. Runs *before* preflight — preflight then checks
+    /// the project dir itself, which we deliberately don't create
+    /// here so the "already exists" collision check still fires for
+    /// repeat installs at the same path.
+    ///
+    /// Safe on both transports: `LocalTransport.createDirectory` uses
+    /// `withIntermediateDirectories: true`; `SSHTransport.createDirectory`
+    /// runs `mkdir -p`. Idempotent for existing dirs in both cases.
+    nonisolated private func bootstrapProjectsRoot(plan: TemplateInstallPlan) throws {
+        let parentDir = (plan.projectDir as NSString).deletingLastPathComponent
+        guard !parentDir.isEmpty, parentDir != "/" else { return }
+        try context.makeTransport().createDirectory(parentDir)
     }
 
     // MARK: - Preflight

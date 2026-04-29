@@ -25,6 +25,10 @@ public struct SSHConfig: Sendable, Hashable, Codable {
     /// `HermesPathSet.defaultRemoteHome` (`~/.hermes`, shell-expanded on the
     /// remote side).
     public var remoteHome: String?
+    /// Override for where Scarf installs new project templates on this host.
+    /// `nil` uses `~/projects` (unexpanded — remote shell resolves it).
+    /// Created on first install if missing.
+    public var projectsRoot: String?
     /// Resolved remote path to the `hermes` binary. Populated by
     /// `SSHTransport` after the first `command -v hermes` probe; cached here
     /// so subsequent calls skip the round trip.
@@ -36,6 +40,7 @@ public struct SSHConfig: Sendable, Hashable, Codable {
         port: Int? = nil,
         identityFile: String? = nil,
         remoteHome: String? = nil,
+        projectsRoot: String? = nil,
         hermesBinaryHint: String? = nil
     ) {
         self.host = host
@@ -43,6 +48,7 @@ public struct SSHConfig: Sendable, Hashable, Codable {
         self.port = port
         self.identityFile = identityFile
         self.remoteHome = remoteHome
+        self.projectsRoot = projectsRoot
         self.hermesBinaryHint = hermesBinaryHint
     }
 }
@@ -104,6 +110,27 @@ public struct ServerContext: Sendable, Hashable, Identifiable {
     public nonisolated var isRemote: Bool {
         if case .ssh = kind { return true }
         return false
+    }
+
+    /// Default parent directory under which `ProjectTemplateInstaller` lays
+    /// out new projects. Per-host configurable on `.ssh` via
+    /// `SSHConfig.projectsRoot`; local always resolves to `~/Projects` on the
+    /// user's Mac. The remote default is left as an unexpanded `~/projects`
+    /// — the remote shell resolves the tilde, same convention as
+    /// `HermesPathSet.defaultRemoteHome`. The installer calls
+    /// `transport.createDirectory(_:)` at install time so a missing dir on a
+    /// fresh host is bootstrapped on first use rather than treated as an error.
+    public nonisolated var defaultProjectsRoot: String {
+        switch kind {
+        case .local:
+            return NSHomeDirectory() + "/Projects"
+        case .ssh(let config):
+            if let configured = config.projectsRoot,
+               !configured.trimmingCharacters(in: .whitespaces).isEmpty {
+                return configured
+            }
+            return "~/projects"
+        }
     }
 
     /// Construct the `ServerTransport` for this context. Local contexts get

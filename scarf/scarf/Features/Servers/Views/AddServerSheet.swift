@@ -93,6 +93,16 @@ struct AddServerSheet: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            LabeledField("Projects directory") {
+                TextField("Default: ~/projects", text: $viewModel.projectsRoot)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+            }
+            Text("Where Scarf installs new project templates on this host. Created on first install if missing.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
             Text("Scarf uses ssh-agent for authentication. If your key has a passphrase, run `ssh-add` before connecting — Scarf never prompts for or stores passphrases.")
                 .font(.caption)
                 .foregroundStyle(.secondary)

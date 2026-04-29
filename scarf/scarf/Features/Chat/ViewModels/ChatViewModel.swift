@@ -142,6 +142,20 @@ final class ChatViewModel {
     /// True when `hasAnyAICredential()` returned false at last preflight.
     var missingCredentials: Bool = false
 
+    /// Set when chat-start is blocked because the active server's
+    /// `config.yaml` has no `model.default` / `model.provider`. The chat
+    /// view observes this and presents `ChatModelPreflightSheet`; on
+    /// successful pick we persist via `setModelAndProvider` and re-attempt
+    /// the original `startACPSession` call from `pendingStartArgs`.
+    /// Nil when no preflight is pending.
+    var modelPreflightReason: String?
+
+    /// Stash of the original `startACPSession` arguments while we wait
+    /// for the user to pick a model. Replayed verbatim once
+    /// `confirmModelPreflight` writes the chosen model+provider to
+    /// config.yaml. Cleared on cancel or after replay.
+    private var pendingStartArgs: (sessionId: String?, projectPath: String?)?
+
     private static let maxReconnectAttempts = 5
     private static let reconnectBaseDelay: UInt64 = 1_000_000_000 // 1 second
     private static let maxReconnectDelay: UInt64 = 16_000_000_000 // 16 seconds
@@ -404,6 +418,23 @@ final class ChatViewModel {
     private func startACPSession(resume sessionId: String?, projectPath: String? = nil) {
         stopACP()
         clearACPErrorState()
+
+        // Pre-flight: bail before opening any ACP plumbing if the
+        // active server's `config.yaml` has no primary model or
+        // provider. Hermes would otherwise let `session/new` succeed
+        // and only fail at first prompt with an opaque
+        // "Model parameter is required" 400. Stashing the start
+        // arguments here lets `confirmModelPreflight` replay them
+        // unchanged after the user picks a model.
+        let preflight = ModelPreflight.check(fileService.loadConfig())
+        if !preflight.isConfigured {
+            pendingStartArgs = (sessionId, projectPath)
+            modelPreflightReason = preflight.reason
+            acpStatus = ""
+            hasActiveProcess = false
+            return
+        }
+
         acpStatus = "Starting..."
 
         let client = ACPClient.forMacApp(context: context)
@@ -714,6 +745,44 @@ final class ChatViewModel {
         acpClient = nil
         hasActiveProcess = false
         isHandlingDisconnect = false
+    }
+
+    // MARK: - Model preflight
+
+    /// Called by `ChatModelPreflightSheet` once the user has picked a
+    /// model in the embedded `ModelPickerSheet`. Persists the choice via
+    /// `hermes config set` (transport-aware — works on remote droplets
+    /// too) and replays the pending `startACPSession` call so the chat
+    /// the user originally tried to open finally lands.
+    @MainActor
+    func confirmModelPreflight(model: String, provider: String) {
+        let pending = pendingStartArgs
+        modelPreflightReason = nil
+        pendingStartArgs = nil
+
+        let svc = fileService
+        Task.detached { [weak self] in
+            let ok = svc.setModelAndProvider(model: model, provider: provider)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                if ok {
+                    if let pending {
+                        self.startACPSession(resume: pending.sessionId, projectPath: pending.projectPath)
+                    }
+                } else {
+                    self.acpError = "Couldn't save model+provider to config.yaml. Open Settings to retry."
+                }
+            }
+        }
+    }
+
+    /// User dismissed the preflight sheet without picking a model. Drop
+    /// the stashed start arguments and leave the chat in its idle state
+    /// — no error banner, since this isn't a failure, just a deferral.
+    @MainActor
+    func cancelModelPreflight() {
+        modelPreflightReason = nil
+        pendingStartArgs = nil
     }
 
     /// Respond to a permission request from the ACP agent.

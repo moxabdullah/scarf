@@ -47,6 +47,20 @@ struct ModelPickerSheet: View {
     /// "Sign in to Nous Portal" button in the subscription summary.
     @State private var showNousSignIn: Bool = false
 
+    /// Cached + freshly-fetched Nous model list for the picker's
+    /// nous-overlay branch. Populated on appear (cache-first) and
+    /// refreshed when the user signs in or hits the Refresh button.
+    @State private var nousModels: [NousModel] = []
+    @State private var nousFetchedAt: Date?
+    @State private var nousRefreshError: String?
+    @State private var nousIsRefreshing: Bool = false
+    /// When true, render the Nous detail with the original free-form
+    /// TextField + manual hint instead of the model list. Used when
+    /// the user explicitly wants to type a model not in the catalog —
+    /// the API list is comprehensive but not infallible, so always
+    /// keep the escape hatch reachable.
+    @State private var nousManualEntry: Bool = false
+
     /// Validation failure surfaced on Select when the typed / selected
     /// model isn't in the chosen provider's catalog. Pass-1 M7 #5
     /// cross-platform fix — previously Scarf let you save any string
@@ -107,6 +121,10 @@ struct ModelPickerSheet: View {
                 // status row flips to "active" without waiting for the
                 // picker to be re-opened.
                 subscription = subscriptionService.loadState()
+                // Sign-in unlocked the bearer token — kick a fresh
+                // model-list fetch so the picker populates without the
+                // user needing to hit Refresh manually.
+                Task { await refreshNousModels(forceRefresh: true) }
             }
         }
         .alert(item: $validationIssue) { issue in
@@ -189,8 +207,14 @@ struct ModelPickerSheet: View {
 
     @ViewBuilder
     private var modelColumn: some View {
-        if let selected = providers.first(where: { $0.providerID == selectedProviderID }), selected.isOverlay {
-            overlayProviderDetail(selected)
+        if let selected = providers.first(where: { $0.providerID == selectedProviderID }) {
+            if selected.providerID == "nous" {
+                nousOverlayDetail(selected)
+            } else if selected.isOverlay {
+                overlayProviderDetail(selected)
+            } else {
+                cachedModelList
+            }
         } else {
             cachedModelList
         }
@@ -239,6 +263,147 @@ struct ModelPickerSheet: View {
                 ContentUnavailableView("No Models", systemImage: "cpu", description: Text("This provider has no catalogued models."))
             }
         }
+    }
+
+    /// Right-column detail for Nous Portal — same overlay shape as
+    /// `overlayProviderDetail` but with a live model list fetched from
+    /// Nous's OpenAI-compatible `/v1/models` endpoint. The list is
+    /// cache-first so opening the sheet feels instant; refresh runs
+    /// in the background. Falls back to a hard-coded short list when
+    /// the user has no token AND no cache (offline first-run on a
+    /// fresh remote install). The "Custom…" button below the list
+    /// flips to the original free-form TextField — Nous occasionally
+    /// adds a model before our cache hits 24h, and we don't want
+    /// users locked out of the latest releases.
+    @ViewBuilder
+    private func nousOverlayDetail(_ provider: HermesProviderInfo) -> some View {
+        let overlay = catalog.overlayMetadata(for: provider.providerID)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(provider.providerName).font(.title3.bold())
+                    if provider.subscriptionGated {
+                        capsuleTag("Subscription", tint: .accentColor)
+                    }
+                }
+                if provider.subscriptionGated {
+                    subscriptionSummary(provider: provider, overlay: overlay)
+                }
+                Divider()
+                if nousManualEntry {
+                    nousManualEntryBlock(provider: provider)
+                } else {
+                    nousModelListBlock
+                }
+                if let docURL = overlay?.docURL, let url = URL(string: docURL) {
+                    Link(destination: url) {
+                        Label("Setup documentation", systemImage: "book")
+                            .font(.caption)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding()
+        }
+    }
+
+    @ViewBuilder
+    private var nousModelListBlock: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Available models")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if nousIsRefreshing {
+                    HStack(spacing: 4) {
+                        ProgressView().controlSize(.mini)
+                        Text("Refreshing…").font(.caption2).foregroundStyle(.tertiary)
+                    }
+                } else {
+                    Button {
+                        Task { await refreshNousModels(forceRefresh: true) }
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                            .labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.borderless)
+                    .help(nousFetchedAtTooltip)
+                }
+                Button("Custom…") { nousManualEntry = true }
+                    .controlSize(.small)
+            }
+            if let err = nousRefreshError, !nousIsRefreshing {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(err)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            List(selection: $overlayModelID) {
+                ForEach(nousModels) { model in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(model.id)
+                            .font(.system(.body, design: .monospaced))
+                        if let owner = model.owned_by, !owner.isEmpty {
+                            Text(owner)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .tag(model.id)
+                }
+            }
+            .listStyle(.inset)
+            .frame(minHeight: 220)
+            .overlay {
+                if nousModels.isEmpty && !nousIsRefreshing {
+                    ContentUnavailableView(
+                        "No models loaded",
+                        systemImage: "cpu",
+                        description: Text("Sign in to Nous Portal to load the catalog, or enter a model ID manually.")
+                    )
+                }
+            }
+            if nousFetchedAt == nil && !nousModels.isEmpty {
+                Text("Showing built-in fallback list — couldn't reach Nous to refresh.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            Text("Leave blank in config to let Hermes pick the default Nous model. Picking one above writes it explicitly.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    @ViewBuilder
+    private func nousManualEntryBlock(provider: HermesProviderInfo) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Model ID").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Use list") { nousManualEntry = false }
+                    .controlSize(.small)
+            }
+            TextField(modelIDPlaceholder(for: provider), text: $overlayModelID)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+            Text("Type a model ID exactly as Nous expects it. Leave blank to use Hermes's default.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private var nousFetchedAtTooltip: String {
+        guard let date = nousFetchedAt else {
+            return "Fetch the latest model list from Nous."
+        }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return "Last refreshed \(formatter.localizedString(for: date, relativeTo: Date()))"
     }
 
     /// Right-column detail for overlay-only providers (Nous Portal, OpenAI
@@ -466,6 +631,53 @@ struct ModelPickerSheet: View {
         // stale highlight state — clear unless the user originally had this model.
         if !models.contains(where: { $0.modelID == selectedModelID }) {
             selectedModelID = models.first?.modelID ?? ""
+        }
+        // Cache-first kick for the Nous catalog. Renders from cache
+        // immediately, fires a background refresh if stale or empty.
+        if selectedProviderID == "nous" {
+            Task { await refreshNousModels(forceRefresh: false) }
+        }
+    }
+
+    /// Cache-first load of the Nous model list. Updates the four
+    /// `@State` vars the detail view reads. Force-refresh skips the
+    /// TTL check so the user-tapped Refresh button always hits the
+    /// network — the cache write keeps the next sheet-open instant.
+    private func refreshNousModels(forceRefresh: Bool) async {
+        let service = NousModelCatalogService(context: serverContext)
+        // Render from cache immediately on the first pass so the user
+        // doesn't see an empty list while the network call is in
+        // flight. The async load below overwrites with fresh data
+        // when it returns.
+        if !forceRefresh, let cache = service.readCache(), !cache.models.isEmpty, nousModels.isEmpty {
+            nousModels = cache.models
+            nousFetchedAt = cache.fetchedAt
+            nousRefreshError = nil
+        }
+        nousIsRefreshing = true
+        let result = await service.loadModels(forceRefresh: forceRefresh)
+        nousIsRefreshing = false
+        switch result {
+        case .fresh(let models, let fetchedAt):
+            nousModels = models
+            nousFetchedAt = fetchedAt
+            nousRefreshError = nil
+        case .cache(let models, let fetchedAt, let refreshError):
+            nousModels = models
+            nousFetchedAt = fetchedAt
+            nousRefreshError = refreshError
+        case .fallback(let models, let reason):
+            nousModels = models
+            nousFetchedAt = nil
+            nousRefreshError = reason
+        }
+        // Pre-fill `overlayModelID` with the user's previously chosen
+        // model when it's in the freshly-loaded list — otherwise the
+        // selection state highlights nothing on first paint.
+        if !overlayModelID.isEmpty,
+           !nousModels.contains(where: { $0.id == overlayModelID }) {
+            // Leave overlayModelID alone — it's a user-typed value
+            // that may legitimately not be in the catalog.
         }
     }
 
