@@ -441,16 +441,21 @@ struct ChatView: View {
             // shows a keyboard accessory toolbar above the system
             // keyboard whenever a focused TextField is on screen;
             // putting a "Done" chevron there is the most-discoverable
-            // dismissal pattern (issue #51).
+            // dismissal pattern (issue #51). Pinned to the LEADING
+            // edge (Spacer trails) so the chevron doesn't visually
+            // stack above the trailing-edge send button in the
+            // composer below — that stacking was the complaint in
+            // issue #57. Matches iOS convention (Notes, Mail, Reminders
+            // all put accessory dismiss on the leading side).
             .toolbar {
                 ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
                     Button {
                         composerFocused = false
                     } label: {
                         Image(systemName: "keyboard.chevron.compact.down")
                     }
                     .accessibilityLabel("Hide keyboard")
+                    Spacer()
                 }
             }
 
