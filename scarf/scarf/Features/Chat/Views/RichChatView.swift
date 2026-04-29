@@ -29,14 +29,25 @@ struct RichChatView: View {
     @AppStorage(ChatDensityKeys.fontScale)
     private var fontScale: Double = ChatFontScale.default
 
+    /// Sessions-list / inspector pane visibility (issue #58). Defaults
+    /// `true` so existing users see no change until they opt out via
+    /// the toolbar buttons or Settings → Display → Chat density.
+    @AppStorage(ChatDensityKeys.showSessionsList)
+    private var showSessionsList: Bool = true
+    @AppStorage(ChatDensityKeys.showInspector)
+    private var showInspector: Bool = true
+
     /// In ACP mode, events drive updates directly — no DB polling needed.
     private var isACPMode: Bool { chatViewModel.isACPConnected }
 
     var body: some View {
         HStack(spacing: 0) {
-            ChatSessionListPane(chatViewModel: chatViewModel, richChat: richChat)
-                .frame(width: 264)
-            Divider().background(ScarfColor.border)
+            if showSessionsList {
+                ChatSessionListPane(chatViewModel: chatViewModel, richChat: richChat)
+                    .frame(width: 264)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+                Divider().background(ScarfColor.border)
+            }
             ChatTranscriptPane(
                 richChat: richChat,
                 chatViewModel: chatViewModel,
@@ -44,12 +55,30 @@ struct RichChatView: View {
                 isEnabled: isEnabled
             )
             .frame(maxWidth: .infinity)
-            Divider().background(ScarfColor.border)
-            ChatInspectorPane(chatViewModel: chatViewModel)
-                .frame(width: 320)
+            if showInspector {
+                Divider().background(ScarfColor.border)
+                ChatInspectorPane(chatViewModel: chatViewModel)
+                    .frame(width: 320)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
         }
         .frame(minHeight: 0, idealHeight: 500, maxHeight: .infinity)
         .environment(\.dynamicTypeSize, ChatFontScale.dynamicTypeSize(for: fontScale))
+        // Animate side-pane shows/hides so the transcript reflows
+        // smoothly rather than snapping. ~180ms feels responsive
+        // without being jarring.
+        .animation(.easeInOut(duration: 0.18), value: showSessionsList)
+        .animation(.easeInOut(duration: 0.18), value: showInspector)
+        // Auto-show inspector when a tool call is focused so a click
+        // on a tool card is never silently lost (issue #58 follow-up).
+        // Tool clicks set `chatViewModel.focusedToolCallId`; if that
+        // becomes non-nil while the inspector is hidden, flip it back
+        // on. The animation modifiers above cover the slide-in.
+        .onChange(of: chatViewModel.focusedToolCallId) { _, new in
+            if new != nil, !showInspector {
+                showInspector = true
+            }
+        }
         // DB polling fallback for terminal mode only — never overwrite ACP messages
         .onChange(of: fileWatcher.lastChangeDate) {
             if !isACPMode, !richChat.hasMessages, richChat.sessionId != nil {

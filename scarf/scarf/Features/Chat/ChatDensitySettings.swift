@@ -15,6 +15,13 @@ enum ChatDensityKeys {
     static let toolCardStyle  = "scarf.chat.toolCardStyle"
     static let reasoningStyle = "scarf.chat.reasoningStyle"
     static let fontScale      = "scarf.chat.fontScale"
+    /// Whether the left sessions list pane is visible in the Mac
+    /// 3-pane chat layout. Defaults true (today's behavior). Issue #58.
+    static let showSessionsList = "scarf.chat.showSessionsList"
+    /// Whether the right tool inspector pane is visible. Defaults true.
+    /// When hidden, clicking a tool card auto-flips it back on so the
+    /// click does what the user expects (`ToolCallCard.onFocus`). Issue #58.
+    static let showInspector    = "scarf.chat.showInspector"
 }
 
 /// How `RichMessageBubble` renders the per-call tool widgets.

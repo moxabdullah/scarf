@@ -7,6 +7,15 @@ struct ChatView: View {
     @Environment(AppCoordinator.self) private var coordinator
     @State private var showErrorDetails = false
 
+    /// Side-pane visibility toggles (issue #58). Drive the new
+    /// sidebar.left / sidebar.right toolbar buttons; `RichChatView.body`
+    /// reads the same `@AppStorage` keys and conditionally renders the
+    /// panes with a slide animation.
+    @AppStorage(ChatDensityKeys.showSessionsList)
+    private var showSessionsList: Bool = true
+    @AppStorage(ChatDensityKeys.showInspector)
+    private var showInspector: Bool = true
+
     var body: some View {
         @Bindable var vm = viewModel
         @Bindable var coord = coordinator
@@ -225,6 +234,30 @@ struct ChatView: View {
                 voiceControls
             }
 
+            // Side-pane toggles (issue #58). Only meaningful in rich-chat
+            // mode where the 3-pane layout exists; terminal mode is a
+            // single SwiftTerm view and these would do nothing. Hide
+            // them on the terminal side so the toolbar stays uncluttered.
+            if viewModel.displayMode == .richChat {
+                Button {
+                    showSessionsList.toggle()
+                } label: {
+                    Image(systemName: "sidebar.left")
+                        .foregroundStyle(showSessionsList ? Color.accentColor : .secondary)
+                }
+                .buttonStyle(.borderless)
+                .help(showSessionsList ? "Hide sessions list" : "Show sessions list")
+
+                Button {
+                    showInspector.toggle()
+                } label: {
+                    Image(systemName: "sidebar.right")
+                        .foregroundStyle(showInspector ? Color.accentColor : .secondary)
+                }
+                .buttonStyle(.borderless)
+                .help(showInspector ? "Hide tool inspector" : "Show tool inspector")
+            }
+
             Picker("View", selection: Bindable(viewModel).displayMode) {
                 Image(systemName: "terminal")
                     .help("Terminal")
@@ -386,12 +419,38 @@ struct ChatView: View {
                 }
             )
         }
+        // Model preflight — open before any ACP plumbing when the active
+        // server has no `model.default` / `model.provider` set. Keeps the
+        // user from typing a prompt only to find out the upstream
+        // provider rejected it.
+        .sheet(isPresented: modelPreflightBinding) {
+            ChatModelPreflightSheet(
+                reason: viewModel.modelPreflightReason ?? "",
+                serverDisplayName: viewModel.context.displayName,
+                onSelect: { model, provider in
+                    viewModel.confirmModelPreflight(model: model, provider: provider)
+                },
+                onCancel: {
+                    viewModel.cancelModelPreflight()
+                }
+            )
+            .environment(\.serverContext, viewModel.context)
+        }
     }
 
     private var permissionBinding: Binding<RichChatViewModel.PendingPermission?> {
         Binding(
             get: { viewModel.richChatViewModel.pendingPermission },
             set: { viewModel.richChatViewModel.pendingPermission = $0 }
+        )
+    }
+
+    private var modelPreflightBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.modelPreflightReason != nil },
+            set: { newValue in
+                if !newValue { viewModel.cancelModelPreflight() }
+            }
         )
     }
 }

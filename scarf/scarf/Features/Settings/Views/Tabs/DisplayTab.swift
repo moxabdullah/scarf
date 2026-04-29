@@ -16,6 +16,12 @@ struct DisplayTab: View {
     private var reasoningStyle: String = ReasoningStyle.disclosure.rawValue
     @AppStorage(ChatDensityKeys.fontScale)
     private var fontScale: Double = ChatFontScale.default
+    /// Side-pane visibility (issue #58). Mirrors the toolbar buttons in
+    /// ChatView; this is the canonical preferences home.
+    @AppStorage(ChatDensityKeys.showSessionsList)
+    private var showSessionsList: Bool = true
+    @AppStorage(ChatDensityKeys.showInspector)
+    private var showInspector: Bool = true
 
     var body: some View {
         SettingsSection(title: "Chat density", icon: "rectangle.compress.vertical") {
@@ -30,6 +36,8 @@ struct DisplayTab: View {
                 options: ReasoningStyle.allCases.map { ($0.rawValue, $0.displayName) }
             )
             FontScaleRow(scale: $fontScale)
+            ToggleRow(label: "Sessions list", isOn: showSessionsList) { showSessionsList = $0 }
+            ToggleRow(label: "Tool inspector", isOn: showInspector) { showInspector = $0 }
             DensityFootnote()
         }
 
