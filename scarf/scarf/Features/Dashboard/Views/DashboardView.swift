@@ -196,24 +196,24 @@ struct DashboardView: View {
                 }
             }
             Spacer()
-            if shadow.hasAuthJSON {
-                Button("Copy fix command") {
-                    Task { @MainActor in
-                        let home = await viewModel.context.resolvedUserHome() + "/.hermes"
-                        if let cmd = ProjectHermesShadowDetector.consolidationCommand(
-                            for: shadow,
-                            hermesHome: home
-                        ) {
-                            let pb = NSPasteboard.general
-                            pb.clearContents()
-                            pb.setString(cmd, forType: .string)
-                        }
+            Button("Copy fix command") {
+                Task { @MainActor in
+                    let home = await viewModel.context.resolvedUserHome() + "/.hermes"
+                    if let cmd = ProjectHermesShadowDetector.consolidationCommand(
+                        for: shadow,
+                        hermesHome: home
+                    ) {
+                        let pb = NSPasteboard.general
+                        pb.clearContents()
+                        pb.setString(cmd, forType: .string)
                     }
                 }
-                .buttonStyle(ScarfSecondaryButton())
-                .controlSize(.small)
-                .help("Copies a one-liner that consolidates this project's auth.json into your global ~/.hermes/. Run it on the remote, then refresh the Dashboard.")
             }
+            .buttonStyle(ScarfSecondaryButton())
+            .controlSize(.small)
+            .help(shadow.hasAuthJSON
+                  ? "Copies a one-liner that consolidates this project's auth.json into your global ~/.hermes/ and renames the shadow .hermes/ aside as .hermes.scarf-bak.<timestamp>/ so it stops binding. Run it on the remote, then refresh the Dashboard."
+                  : "Copies a one-liner that renames this project's shadow .hermes/ aside as .hermes.scarf-bak.<timestamp>/ so Hermes' CLI stops binding to it as $HERMES_HOME. Run it on the remote, then refresh the Dashboard.")
         }
         .padding(ScarfSpace.s2)
         .background(

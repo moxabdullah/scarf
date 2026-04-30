@@ -101,14 +101,55 @@ public struct ProjectHermesShadowDetector: Sendable {
         return found
     }
 
-    /// Suggested shell command the user can copy-paste / run on the remote
-    /// to consolidate a shadow's auth.json into their global Hermes home.
-    /// Skips state.db / sessions / skills migration intentionally — those
-    /// require Hermes to be quiesced and risk data loss; the user should
-    /// decide what to keep on a case-by-case basis. We give them the
-    /// load-bearing one-liner (auth) and let them handle the rest.
+    /// Suggested shell one-liner that consolidates a project shadow into
+    /// the global Hermes home AND clears the warning on the next
+    /// refresh. Two ordered steps:
+    ///
+    /// 1. Copy `auth.json` into the global home (only when present).
+    ///    Hermes credentials live in this single file; preserving them
+    ///    is the load-bearing part of "consolidate" — every other
+    ///    project-local file is either replaceable or scoped to the
+    ///    project anyway.
+    /// 2. Rename the project-local `.hermes/` to
+    ///    `.hermes.scarf-bak.<UTC-stamp>/`. Hermes' CLI stops seeing it
+    ///    as `$HERMES_HOME` (it scans for a dir literally named
+    ///    `.hermes`), so the global home wins from now on. The
+    ///    user's project-local data — `state.db`, `sessions/`,
+    ///    `skills/` — survives untouched in the renamed folder, so
+    ///    they can inspect/recover/delete it later without us making
+    ///    that decision for them.
+    ///
+    /// **Why not delete instead of rename.** A project's shadow can
+    /// hold uncommitted session history the user hasn't audited yet.
+    /// `rm -rf` would be unrecoverable; the rename keeps everything
+    /// addressable while still removing the shadow effect. The user
+    /// can delete the `.bak` once they're confident.
+    ///
+    /// Returns a single shell line, suitable for the user to paste
+    /// into a remote terminal. The rename uses `date -u +%Y%m%d-%H%M%S`
+    /// for a deterministic UTC suffix so two consecutive consolidations
+    /// don't collide on the same second.
     public static func consolidationCommand(for shadow: Shadow, hermesHome: String) -> String? {
-        guard shadow.hasAuthJSON else { return nil }
-        return "cp \(shadow.shadowPath)/auth.json \(hermesHome)/auth.json && chmod 600 \(hermesHome)/auth.json"
+        var parts: [String] = []
+        if shadow.hasAuthJSON {
+            parts.append("mkdir -p \(shellQuote(hermesHome))")
+            parts.append("cp \(shellQuote(shadow.shadowPath + "/auth.json")) \(shellQuote(hermesHome + "/auth.json"))")
+            parts.append("chmod 600 \(shellQuote(hermesHome + "/auth.json"))")
+        }
+        // The rename is unconditional: even shadows without auth.json
+        // still bind as $HERMES_HOME and need to move out of the way.
+        // `$(date -u +%Y%m%d-%H%M%S)` runs on the remote shell when
+        // the user pastes the command, producing the timestamp at
+        // exec time rather than at command-construction time.
+        parts.append("mv \(shellQuote(shadow.shadowPath)) \(shellQuote(shadow.shadowPath))\".scarf-bak.$(date -u +%Y%m%d-%H%M%S)\"")
+        return parts.joined(separator: " && ")
+    }
+
+    /// Single-quote a path for embedding in a `bash -c '…'` string.
+    /// POSIX-safe single quotes with escape for embedded quotes
+    /// (`'` → `'\\''`). Matches the convention in
+    /// `RemoteBackupService.shellQuote`.
+    private static func shellQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }
