@@ -354,6 +354,19 @@ public final class RichChatViewModel {
     /// spinner and we don't fan out duplicate page requests.
     public private(set) var isLoadingEarlier: Bool = false
     private var nextLocalId = -1
+
+    /// Issue #63: locally-created user messages awaiting state.db
+    /// persistence, keyed by session id. ACP roundtrips Hermes' DB
+    /// write asynchronously, so a user who sends a prompt and
+    /// immediately switches to another session triggers `reset()`
+    /// before Hermes flushes the row — `loadSessionHistory` then reads
+    /// from a DB that doesn't have the message yet, and the bubble
+    /// renders blank or vanishes on return. We hold a per-session
+    /// copy here that survives `reset()` so `loadSessionHistory` can
+    /// re-inject anything still in flight, and clean entries out as
+    /// soon as a matching DB row appears.
+    private var pendingLocalUserMessages: [String: [HermesMessage]] = [:]
+
     private var streamingAssistantText = ""
     private var streamingThinkingText = ""
     private var streamingToolCalls: [HermesToolCall] = []
@@ -468,6 +481,12 @@ public final class RichChatViewModel {
             reasoning: nil
         )
         messages.append(message)
+        // Track the local message in the pending-user-messages cache
+        // so a reset/resume cycle on this session before Hermes
+        // persists the row can still re-inject it on return (#63).
+        if let sid = sessionId {
+            pendingLocalUserMessages[sid, default: []].append(message)
+        }
         // Per-turn stopwatch (v2.5): record the start time only when
         // we're entering a fresh agent turn. /steer-style mid-run sends
         // arrive while isAgentWorking is already true; preserve the
@@ -972,9 +991,47 @@ public final class RichChatViewModel {
             }
         }
 
-        messages = allMessages
+        // Issue #63 — re-inject any locally-created user messages
+        // we still have on file for this session that haven't yet
+        // shown up in state.db. Covers two paths:
+        //   1. The user just sent a prompt then resumed a different
+        //      session before Hermes persisted the row. `reset()` had
+        //      cleared `messages` but the per-session pending cache
+        //      survived; restore the row here so the bubble doesn't
+        //      come back blank.
+        //   2. The DB-resume path on first load — a previously-pending
+        //      message Hermes is still mid-write may not appear in
+        //      this fetch. We merge it in, and drop it from the cache
+        //      as soon as a matching DB row (same content, persisted
+        //      id ≥ 0) shows up.
+        let pendingForSession = pendingLocalUserMessages[sessionId] ?? []
+        if pendingForSession.isEmpty {
+            messages = allMessages
+        } else {
+            var merged = allMessages
+            var stillPending: [HermesMessage] = []
+            for local in pendingForSession {
+                let persisted = merged.contains { msg in
+                    msg.isUser && msg.id >= 0 && msg.content == local.content
+                }
+                if persisted {
+                    continue // DB caught up — drop the local copy
+                }
+                if !merged.contains(where: { $0.id == local.id }) {
+                    merged.append(local)
+                }
+                stillPending.append(local)
+            }
+            merged.sort { ($0.timestamp ?? .distantPast) < ($1.timestamp ?? .distantPast) }
+            messages = merged
+            if stillPending.isEmpty {
+                pendingLocalUserMessages.removeValue(forKey: sessionId)
+            } else {
+                pendingLocalUserMessages[sessionId] = stillPending
+            }
+        }
         currentSession = session
-        let minId = allMessages.map(\.id).min() ?? 0
+        let minId = messages.map(\.id).min() ?? 0
         nextLocalId = min(minId - 1, -1)
         // Track the oldest loaded id from THIS session (not the merged
         // origin) so `loadEarlier()` pages back through the live ACP
