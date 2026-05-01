@@ -44,12 +44,23 @@ struct ChatTranscriptPane: View {
             if let hint = richChat.transientHint {
                 steeringToast(hint)
             }
+            // Issue #62: bind composer identity to the active session
+            // ID so SwiftUI rebuilds `RichChatInputBar` (and its
+            // `@State` `text`/`attachments`) when the user switches
+            // conversations. Without this the composer is structurally
+            // identical across sessions and SwiftUI happily reuses the
+            // instance, leaking the unsent draft into the new session.
+            // A stable fallback id covers the brief "no session
+            // selected" window — using `UUID()` here would mint a
+            // fresh value per render and trash the composer on every
+            // body re-eval.
             RichChatInputBar(
                 onSend: onSend,
                 isEnabled: isEnabled,
                 commands: richChat.availableCommands,
                 showCompressButton: richChat.supportsCompress && !richChat.hasBroaderCommandMenu
             )
+            .id(richChat.sessionId ?? "scarf.chat.no-session")
         }
         .background(ScarfColor.backgroundPrimary)
     }
