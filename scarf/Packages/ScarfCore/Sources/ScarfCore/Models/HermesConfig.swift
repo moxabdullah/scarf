@@ -260,8 +260,11 @@ public struct VoiceSettings: Sendable, Equatable {
 
 /// Per-task auxiliary model overrides.
 ///
-/// `flush_memories` was removed entirely in Hermes v0.12 (the underlying
-/// task no longer exists), so the corresponding field was dropped here.
+/// `flush_memories` was removed in Hermes v0.12 but remains alive on
+/// pre-v0.12 hosts — the field is preserved here so the YAML parser
+/// can round-trip it and `AuxiliaryTab` can render the row when
+/// `HermesCapabilities.hasFlushMemoriesAux` is set. On v0.12+ the
+/// field stays empty and is never surfaced.
 /// `curator` was added in v0.12 — Curator's review fork uses its own
 /// model so users can keep main-model spend separate from background
 /// maintenance.
@@ -273,6 +276,8 @@ public struct AuxiliarySettings: Sendable, Equatable {
     public var skillsHub: AuxiliaryModel
     public var approval: AuxiliaryModel
     public var mcp: AuxiliaryModel
+    /// pre-v0.12 only; on v0.12+ this stays `.empty` and the row is hidden.
+    public var flushMemories: AuxiliaryModel
     /// v0.12+; pre-v0.12 Hermes installs ignore this slot.
     public var curator: AuxiliaryModel
 
@@ -285,6 +290,7 @@ public struct AuxiliarySettings: Sendable, Equatable {
         skillsHub: AuxiliaryModel,
         approval: AuxiliaryModel,
         mcp: AuxiliaryModel,
+        flushMemories: AuxiliaryModel,
         curator: AuxiliaryModel
     ) {
         self.vision = vision
@@ -294,6 +300,7 @@ public struct AuxiliarySettings: Sendable, Equatable {
         self.skillsHub = skillsHub
         self.approval = approval
         self.mcp = mcp
+        self.flushMemories = flushMemories
         self.curator = curator
     }
     public nonisolated static let empty = AuxiliarySettings(
@@ -304,6 +311,7 @@ public struct AuxiliarySettings: Sendable, Equatable {
         skillsHub: .empty,
         approval: .empty,
         mcp: .empty,
+        flushMemories: .empty,
         curator: .empty
     )
 }

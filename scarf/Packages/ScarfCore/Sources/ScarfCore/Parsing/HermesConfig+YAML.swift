@@ -122,6 +122,7 @@ public extension HermesConfig {
             skillsHub: aux("skills_hub"),
             approval: aux("approval"),
             mcp: aux("mcp"),
+            flushMemories: aux("flush_memories"),
             curator: aux("curator")
         )
 
