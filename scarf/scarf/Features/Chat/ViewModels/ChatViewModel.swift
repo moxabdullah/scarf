@@ -415,6 +415,21 @@ final class ChatViewModel {
                 )
                 // Re-fetch session from DB to pick up cost/token data Hermes may have written
                 await richChatViewModel.refreshSessionFromDB()
+                // Issue #64 — notify the user that Hermes has
+                // finished if Scarf isn't the foreground app. The
+                // notifier handles the foreground/disabled gating;
+                // we just hand it the latest assistant text and
+                // session title for the body line.
+                if !isSteer {
+                    let preview = richChatViewModel.messages
+                        .last(where: { $0.isAssistant })?
+                        .content ?? ""
+                    let title = richChatViewModel.currentSession?.title
+                    ChatNotificationService.shared.postPromptCompleted(
+                        sessionTitle: title,
+                        preview: preview
+                    )
+                }
             } catch is CancellationError {
                 acpStatus = "Cancelled"
             } catch {

@@ -22,6 +22,10 @@ struct DisplayTab: View {
     private var showSessionsList: Bool = true
     @AppStorage(ChatDensityKeys.showInspector)
     private var showInspector: Bool = true
+    /// Background-completion notifications (issue #64). Default on so
+    /// users new to Scarf get the async-aware UX out of the box.
+    @AppStorage(ChatNotificationService.toggleKey)
+    private var notifyOnComplete: Bool = true
 
     var body: some View {
         SettingsSection(title: "Chat density", icon: "rectangle.compress.vertical") {
@@ -64,6 +68,7 @@ struct DisplayTab: View {
 
         SettingsSection(title: "Feedback", icon: "bell") {
             ToggleRow(label: "Bell on Complete", isOn: viewModel.config.display.bellOnComplete) { viewModel.setBellOnComplete($0) }
+            ToggleRow(label: "Notify when Hermes finishes", isOn: notifyOnComplete) { notifyOnComplete = $0 }
         }
     }
 }
