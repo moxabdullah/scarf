@@ -40,7 +40,8 @@ struct CronView: View {
                     deliver: form.deliver,
                     skills: form.skills,
                     script: form.script,
-                    repeatCount: form.repeatCount
+                    repeatCount: form.repeatCount,
+                    workdir: form.workdir
                 )
                 viewModel.showCreateSheet = false
             } onCancel: {
@@ -58,7 +59,8 @@ struct CronView: View {
                     repeatCount: form.repeatCount,
                     newSkills: form.skills,
                     clearSkills: form.clearSkills,
-                    script: form.script
+                    script: form.script,
+                    workdir: form.workdir
                 )
                 viewModel.editingJob = nil
             } onCancel: {
@@ -468,6 +470,9 @@ struct CronJobEditor: View {
         var skills: [String] = []
         var clearSkills: Bool = false
         var script: String = ""
+        /// v0.12+ workdir flag — fills `--workdir <path>`. Empty string
+        /// preserves the v0.11 behaviour of running with no cwd hint.
+        var workdir: String = ""
     }
 
     let mode: Mode
@@ -506,6 +511,7 @@ struct CronJobEditor: View {
             formField("Deliver", text: $form.deliver, placeholder: "origin | local | discord:CHANNEL | telegram:CHAT", mono: true)
             formField("Repeat", text: $form.repeatCount, placeholder: "Optional count")
             formField("Script path", text: $form.script, placeholder: "Python script whose stdout is injected", mono: true)
+            formField("Workdir", text: $form.workdir, placeholder: "Absolute path; pulls AGENTS.md/CLAUDE.md context (v0.12+)", mono: true)
             if !availableSkills.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Skills")
@@ -564,6 +570,7 @@ struct CronJobEditor: View {
                 form.deliver = job.deliver ?? ""
                 form.skills = job.skills ?? []
                 form.script = job.preRunScript ?? ""
+                form.workdir = job.workdir ?? ""
             }
         }
     }

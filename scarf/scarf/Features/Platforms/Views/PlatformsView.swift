@@ -147,10 +147,36 @@ struct PlatformsView: View {
         case "imessage":       IMessageSetupView(context: ctx)
         case "homeassistant":  HomeAssistantSetupView(context: ctx)
         case "webhook":        WebhookSetupView(context: ctx)
+        case "yuanbao":        yuanbaoPanel
+        case "microsoft-teams": microsoftTeamsPanel
         default:
             SettingsSection(title: LocalizedStringKey(viewModel.selected.displayName), icon: KnownPlatforms.icon(for: viewModel.selected.name)) {
                 ReadOnlyRow(label: "Setup", value: "No setup form for this platform yet.")
             }
+        }
+    }
+
+    /// Hermes v0.12 — Yuanbao 元宝 ships as a native gateway adapter
+    /// (the 18th platform). Setup is YAML-driven; we surface the
+    /// shell command and a docs link rather than a per-field form
+    /// because the auth dance is OAuth-style and lives outside Scarf.
+    private var yuanbaoPanel: some View {
+        SettingsSection(title: "Yuanbao 元宝", icon: KnownPlatforms.icon(for: "yuanbao")) {
+            ReadOnlyRow(label: "Type", value: "Native gateway adapter (v0.12+)")
+            ReadOnlyRow(label: "Setup", value: "Run `hermes setup` and select Yuanbao to walk the OAuth flow.")
+            ReadOnlyRow(label: "Multi-image", value: "Supported via the gateway's centralized media routing.")
+            ReadOnlyRow(label: "Configured", value: viewModel.hasConfigBlock(for: viewModel.selected) ? "Yes" : "No")
+        }
+    }
+
+    /// Hermes v0.12 — Microsoft Teams ships as a plugin (the 19th
+    /// platform). Surface that explicitly so users know the setup
+    /// path differs from the native adapters.
+    private var microsoftTeamsPanel: some View {
+        SettingsSection(title: "Microsoft Teams", icon: KnownPlatforms.icon(for: "microsoft-teams")) {
+            ReadOnlyRow(label: "Type", value: "Plugin-shipped gateway platform (v0.12+)")
+            ReadOnlyRow(label: "Setup", value: "Install the plugin from the Plugins tab, then run `hermes setup` to register the bot.")
+            ReadOnlyRow(label: "Configured", value: viewModel.hasConfigBlock(for: viewModel.selected) ? "Yes" : "No")
         }
     }
 

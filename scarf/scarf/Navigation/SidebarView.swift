@@ -29,12 +29,18 @@ struct SidebarView: View {
         }
         interact.append(.skills)
 
+        var manage: [SidebarSection] = [.tools, .mcpServers, .gateway, .cron]
+        if caps?.hasKanban ?? false {
+            manage.append(.kanban)
+        }
+        manage.append(contentsOf: [.health, .logs, .settings])
+
         return [
             Section(title: "Monitor",  items: [.dashboard, .insights, .sessions, .activity]),
             Section(title: "Projects", items: [.projects]),
             Section(title: "Interact", items: interact),
             Section(title: "Configure", items: [.platforms, .personalities, .quickCommands, .credentialPools, .plugins, .webhooks, .profiles]),
-            Section(title: "Manage",   items: [.tools, .mcpServers, .gateway, .cron, .health, .logs, .settings]),
+            Section(title: "Manage",   items: manage),
         ]
     }
 

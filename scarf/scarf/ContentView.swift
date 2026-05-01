@@ -74,6 +74,7 @@ struct ContentView: View {
         case .mcpServers:       MCPServersView(context: serverContext)
         case .gateway:          GatewayView(context: serverContext)
         case .cron:             CronView(context: serverContext)
+        case .kanban:           KanbanView(context: serverContext)
         case .health:           HealthView(context: serverContext)
         case .logs:             LogsView(context: serverContext)
         case .settings:         SettingsView(context: serverContext)
