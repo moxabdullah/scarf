@@ -486,12 +486,14 @@ struct RichChatInputBar: View {
         panel.prompt = "Attach"
         let response = panel.runModal()
         guard response == .OK else { return }
-        let urls = panel.urls
-        let remainingSlots = Self.maxAttachments - attachments.count
-        for url in urls.prefix(remainingSlots) {
-            guard let data = try? Data(contentsOf: url) else { continue }
-            isEncodingAttachment = true
-            encode(data: data, filename: url.lastPathComponent)
+        let urls = Array(panel.urls.prefix(Self.maxAttachments - attachments.count))
+        guard !urls.isEmpty else { return }
+        isEncodingAttachment = true
+        Task.detached(priority: .userInitiated) {
+            for url in urls {
+                guard let data = try? Data(contentsOf: url) else { continue }
+                encode(data: data, filename: url.lastPathComponent)
+            }
         }
         #endif
     }
