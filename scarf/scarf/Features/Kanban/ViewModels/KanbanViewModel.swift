@@ -71,21 +71,26 @@ final class KanbanViewModel {
         isLoading = true
         let svc = fileService
         let filter = statusFilter
-        let result = await Task.detached { () -> (data: Data?, exitCode: Int32, stderr: String) in
+        let result = await Task.detached { () -> (exitCode: Int32, stdout: String, stderr: String) in
             var args = ["kanban", "list", "--json"]
             if filter != .all {
                 args.append(contentsOf: ["--status", filter.rawValue])
             }
-            let r = svc.runHermesCLI(args: args, timeout: 15)
-            return (r.output.data(using: .utf8), r.exitCode, r.output)
+            return svc.runHermesCLISplit(args: args, timeout: 15)
         }.value
 
         defer { isLoading = false }
 
-        guard result.exitCode == 0, let data = result.data else {
+        guard result.exitCode == 0 else {
             lastError = result.stderr.isEmpty
                 ? "kanban list failed (\(result.exitCode))"
                 : result.stderr
+            tasks = []
+            return
+        }
+
+        guard let data = result.stdout.data(using: .utf8) else {
+            lastError = "kanban list returned non-UTF8 output"
             tasks = []
             return
         }
@@ -98,7 +103,7 @@ final class KanbanViewModel {
             // Hermes may print a "no matching tasks" line as text instead of
             // empty JSON; handle gracefully so the UI shows an empty list
             // without raising an error banner.
-            if String(data: data, encoding: .utf8)?.contains("no matching tasks") == true {
+            if result.stdout.contains("no matching tasks") {
                 tasks = []
                 lastError = nil
                 return
