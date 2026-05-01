@@ -12,9 +12,14 @@ import ScarfDesign
 struct CronView: View {
     @State private var viewModel: CronViewModel
     @State private var pendingDelete: HermesCronJob?
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
 
     init(context: ServerContext) {
         _viewModel = State(initialValue: CronViewModel(context: context))
+    }
+
+    private var hasCronWorkdir: Bool {
+        capabilitiesStore?.capabilities.hasCronWorkdir ?? false
     }
 
     var body: some View {
@@ -32,7 +37,7 @@ struct CronView: View {
         .loadingOverlay(viewModel.isLoading, label: "Loading cron jobs…", isEmpty: viewModel.jobs.isEmpty)
         .onAppear { viewModel.load() }
         .sheet(isPresented: $viewModel.showCreateSheet) {
-            CronJobEditor(mode: .create, availableSkills: viewModel.availableSkills) { form in
+            CronJobEditor(mode: .create, availableSkills: viewModel.availableSkills, supportsWorkdir: hasCronWorkdir) { form in
                 viewModel.createJob(
                     schedule: form.schedule,
                     prompt: form.prompt,
@@ -41,7 +46,7 @@ struct CronView: View {
                     skills: form.skills,
                     script: form.script,
                     repeatCount: form.repeatCount,
-                    workdir: form.workdir
+                    workdir: hasCronWorkdir ? form.workdir : ""
                 )
                 viewModel.showCreateSheet = false
             } onCancel: {
@@ -49,7 +54,7 @@ struct CronView: View {
             }
         }
         .sheet(item: $viewModel.editingJob) { job in
-            CronJobEditor(mode: .edit(job), availableSkills: viewModel.availableSkills) { form in
+            CronJobEditor(mode: .edit(job), availableSkills: viewModel.availableSkills, supportsWorkdir: hasCronWorkdir) { form in
                 viewModel.updateJob(
                     id: job.id,
                     schedule: form.schedule,
@@ -60,7 +65,7 @@ struct CronView: View {
                     newSkills: form.skills,
                     clearSkills: form.clearSkills,
                     script: form.script,
-                    workdir: form.workdir
+                    workdir: hasCronWorkdir ? form.workdir : nil
                 )
                 viewModel.editingJob = nil
             } onCancel: {
@@ -477,6 +482,9 @@ struct CronJobEditor: View {
 
     let mode: Mode
     let availableSkills: [String]
+    /// Pass `false` on pre-v0.12 hosts; the `--workdir` field is hidden and
+    /// the form's value is dropped when the parent calls `createJob`/`updateJob`.
+    let supportsWorkdir: Bool
     let onSave: (FormState) -> Void
     let onCancel: () -> Void
 
@@ -511,7 +519,9 @@ struct CronJobEditor: View {
             formField("Deliver", text: $form.deliver, placeholder: "origin | local | discord:CHANNEL | telegram:CHAT", mono: true)
             formField("Repeat", text: $form.repeatCount, placeholder: "Optional count")
             formField("Script path", text: $form.script, placeholder: "Python script whose stdout is injected", mono: true)
-            formField("Workdir", text: $form.workdir, placeholder: "Absolute path; pulls AGENTS.md/CLAUDE.md context (v0.12+)", mono: true)
+            if supportsWorkdir {
+                formField("Workdir", text: $form.workdir, placeholder: "Absolute path; pulls AGENTS.md/CLAUDE.md context", mono: true)
+            }
             if !availableSkills.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Skills")
