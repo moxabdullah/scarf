@@ -364,10 +364,51 @@ struct RichMessageBubble: View, Equatable {
                     .font(ChatFontScale.monoSmall(chatFontScale))
                     .help("Wall-clock duration of this turn")
             }
+            // Per-message TTS playback toggle (issue #66). Only on
+            // settled assistant bubbles — streaming bubble (id == 0)
+            // would speak partial text. Empty content has nothing to
+            // speak.
+            if message.id != 0, !message.content.isEmpty {
+                speakButton
+            }
         }
         .font(ChatFontScale.caption(chatFontScale))
         .foregroundStyle(ScarfColor.foregroundFaint)
         .padding(.leading, 4)
+    }
+
+    /// Speaker glyph that toggles `AVSpeechSynthesizer` playback for
+    /// the assistant reply. Lives in its own view so the
+    /// `MessageSpeechService` observation doesn't fight the bubble's
+    /// `Equatable` short-circuit — the parent only needs to pass
+    /// stable id + content; this view re-renders on its own when
+    /// playback state flips.
+    private var speakButton: some View {
+        SpeakMessageButton(messageId: message.id, content: message.content)
+    }
+}
+
+/// Stand-alone speaker button so the `MessageSpeechService`
+/// observation doesn't get short-circuited by `RichMessageBubble`'s
+/// `Equatable`. Only the button re-renders when playback flips —
+/// the bubble itself stays optimised.
+private struct SpeakMessageButton: View {
+    let messageId: Int
+    let content: String
+
+    @State private var speech = MessageSpeechService.shared
+
+    var body: some View {
+        let isPlaying = speech.playingMessageId == messageId
+        Button {
+            speech.toggle(messageId: messageId, content: content)
+        } label: {
+            Image(systemName: isPlaying ? "stop.circle.fill" : "speaker.wave.2")
+                .font(.system(size: 11))
+                .foregroundStyle(isPlaying ? ScarfColor.accent : ScarfColor.foregroundFaint)
+        }
+        .buttonStyle(.plain)
+        .help(isPlaying ? "Stop speaking" : "Read this reply aloud")
     }
 }
 
