@@ -362,10 +362,17 @@ public actor ACPClient {
         #endif
 
         // session/prompt streams events and can run for minutes — no hard
-        // timeout. Control messages get a 30s watchdog.
+        // timeout. Control messages get a 60s watchdog. Older versions
+        // capped at 30s, which the field reported (#61) was tripping
+        // under realistic gateway+ACP concurrency: the gateway holds
+        // state.db locks for Discord sync / skill registration / cron
+        // scheduling, and ACP's `initialize` / `session/new` /
+        // `session/load` stall waiting for the lock. SQLite contention
+        // on a healthy host clears in seconds; 60s gives that headroom
+        // while still surfacing genuinely broken transports promptly.
         let timeoutTask: Task<Void, Error>? = if method != "session/prompt" {
             Task { [weak self] in
-                try await Task.sleep(nanoseconds: 30 * 1_000_000_000)
+                try await Task.sleep(nanoseconds: 60 * 1_000_000_000)
                 await self?.timeoutRequest(id: requestId, method: method)
             }
         } else {
