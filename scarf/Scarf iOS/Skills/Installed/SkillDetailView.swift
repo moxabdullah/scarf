@@ -31,6 +31,34 @@ struct SkillDetailView: View {
                     .font(.caption.monospaced())
                     .foregroundStyle(ScarfColor.foregroundMuted)
                     .textSelection(.enabled)
+                if !skill.enabled {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Disabled").font(.callout.weight(.medium))
+                            Text("This skill is in `skills.disabled` in `~/.hermes/config.yaml`. Hermes won't load it. Re-enable from the Mac app's Skills config UI or with `hermes skills config`.")
+                                .font(.caption)
+                                .foregroundStyle(ScarfColor.foregroundMuted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    } icon: {
+                        Image(systemName: "circle.slash")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if skill.pinned {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Pinned by curator").font(.callout.weight(.medium))
+                            Text("The autonomous curator won't auto-archive or rewrite this skill. Unpin from the Curator screen.")
+                                .font(.caption)
+                                .foregroundStyle(ScarfColor.foregroundMuted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    } icon: {
+                        Image(systemName: "pin.fill")
+                            .foregroundStyle(ScarfColor.accent)
+                    }
+                }
             }
             .listRowBackground(ScarfColor.backgroundSecondary)
 
