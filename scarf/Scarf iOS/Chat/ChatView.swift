@@ -621,28 +621,59 @@ struct ChatView: View {
     #if canImport(PhotosUI)
     private func ingestPickerItems(_ items: [PhotosPickerItem]) {
         guard !items.isEmpty else { return }
-        // Capture the items, immediately clear the binding so a future
-        // pick triggers onChange even when the user re-selects the
-        // same image set. PhotosPicker behavior: identical selection
-        // doesn't re-fire onChange unless the binding flips through nil.
-        let snapshot = items
+        // Cap up front and snapshot so the slot calculation is honest under
+        // concurrent ingestion (we'd otherwise have to re-check
+        // controller.attachments.count after every parallel completion).
+        let remainingSlots = Self.maxAttachments - controller.attachments.count
+        let snapshot = Array(items.prefix(max(remainingSlots, 0)))
+        // Clear the binding immediately so a follow-up pick triggers onChange
+        // even when the user re-selects the same image set (PhotosPicker
+        // doesn't re-fire onChange unless the binding flips through nil).
         pickerSelection = []
+        guard !snapshot.isEmpty else { return }
         isEncodingAttachment = true
         Task { @MainActor in
-            for item in snapshot {
-                guard controller.attachments.count < Self.maxAttachments else { break }
-                do {
-                    guard let data = try await item.loadTransferable(type: Data.self) else { continue }
-                    let attachment = try await Task.detached(priority: .userInitiated) {
-                        try ImageEncoder().encode(rawBytes: data, sourceFilename: nil)
-                    }.value
-                    controller.attachments.append(attachment)
-                } catch {
-                    attachmentError = (error as? LocalizedError)?.errorDescription ?? "Couldn't encode image"
-                    Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 4_000_000_000)
-                        attachmentError = nil
+            // Run loadTransferable + encode for each item in parallel.
+            // iCloud-backed PHAssets are network-bound, so 5 picks finish
+            // closer to 1 round-trip than 5 sequential ones. Errors carry
+            // a Sendable String (not the Error itself) since `any Error`
+            // isn't Sendable under strict concurrency.
+            let outcomes = await withTaskGroup(
+                of: (index: Int, attachment: ChatImageAttachment?, errorMessage: String?).self
+            ) { group in
+                for (index, item) in snapshot.enumerated() {
+                    group.addTask {
+                        do {
+                            guard let data = try await item.loadTransferable(type: Data.self) else {
+                                return (index, nil, nil)
+                            }
+                            let attachment = try await Task.detached(priority: .userInitiated) {
+                                try ImageEncoder().encode(rawBytes: data, sourceFilename: nil)
+                            }.value
+                            return (index, attachment, nil)
+                        } catch {
+                            let message = (error as? LocalizedError)?.errorDescription ?? "Couldn't encode image"
+                            return (index, nil, message)
+                        }
                     }
+                }
+                var rows: [(index: Int, attachment: ChatImageAttachment?, errorMessage: String?)] = []
+                for await row in group { rows.append(row) }
+                return rows.sorted { $0.index < $1.index }
+            }
+            var firstError: String?
+            for outcome in outcomes {
+                if let attachment = outcome.attachment {
+                    controller.attachments.append(attachment)
+                } else if firstError == nil, let message = outcome.errorMessage {
+                    firstError = message
+                }
+            }
+            if let firstError {
+                attachmentError = firstError
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 4_000_000_000)
+                    attachmentError = nil
                 }
             }
             isEncodingAttachment = false
