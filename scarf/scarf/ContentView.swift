@@ -61,6 +61,7 @@ struct ContentView: View {
         case .projects:         ProjectsView(context: serverContext)
         case .chat:             ChatView()
         case .memory:           MemoryView(context: serverContext)
+        case .curator:          CuratorView(context: serverContext)
         case .skills:           SkillsView(context: serverContext)
         case .platforms:        PlatformsView(context: serverContext)
         case .personalities:    PersonalitiesView(context: serverContext)

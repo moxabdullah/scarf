@@ -30,6 +30,14 @@ struct ScarfGoTabRoot: View {
     let onSoftDisconnect: @MainActor () async -> Void
     let onForget: @MainActor () async -> Void
 
+    /// Stable per-tab context UUID — used for the System tab's Curator
+    /// row so its CuratorViewModel reuses the cached SSH connection
+    /// keyed by this id rather than building a fresh one. Same pattern
+    /// as `sharedContextID` on ChatView.
+    static let systemTabContextID: ServerID = ServerID(
+        uuidString: "00000000-0000-0000-0000-0000000000A2"
+    )!
+
     /// One coordinator per server-connected session. Cross-tab
     /// signalling (Dashboard row → Chat tab resume, Project Detail
     /// → in-project chat handoff, notification deep-link → Chat) flows
@@ -172,6 +180,8 @@ private struct SystemTab: View {
     let onSoftDisconnect: @MainActor () async -> Void
     let onForget: @MainActor () async -> Void
 
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
+
     @State private var showForgetConfirmation = false
     @State private var isForgetting = false
     @State private var isDisconnecting = false
@@ -206,6 +216,15 @@ private struct SystemTab: View {
                 }
                 .scarfGoCompactListRow()
                 .listRowBackground(ScarfColor.backgroundSecondary)
+                if capabilitiesStore?.capabilities.hasCurator ?? false {
+                    NavigationLink {
+                        CuratorView(context: config.toServerContext(id: ScarfGoTabRoot.systemTabContextID))
+                    } label: {
+                        Label("Curator", systemImage: "sparkles")
+                    }
+                    .scarfGoCompactListRow()
+                    .listRowBackground(ScarfColor.backgroundSecondary)
+                }
                 NavigationLink {
                     CronListView(config: config)
                 } label: {

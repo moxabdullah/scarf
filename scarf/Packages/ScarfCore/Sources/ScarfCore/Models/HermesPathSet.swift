@@ -75,12 +75,17 @@ public struct HermesPathSet: Sendable, Hashable {
     public nonisolated var errorsLog: String { home + "/logs/errors.log" }
     public nonisolated var agentLog: String { home + "/logs/agent.log" }
     public nonisolated var gatewayLog: String { home + "/logs/gateway.log" }
-    /// Curator run report, JSON (v0.12+). Written by `hermes curator` on
-    /// each cycle; consumed by `CuratorViewModel` for structured stats.
-    public nonisolated var curatorReportJSON: String { home + "/logs/curator/run.json" }
-    /// Curator human-readable run report (v0.12+). Renders as the
-    /// "Last run" text in CuratorView.
-    public nonisolated var curatorReportMD: String { home + "/logs/curator/REPORT.md" }
+    /// Curator run-reports root (v0.12+). Hermes writes per-cycle dirs
+    /// under here named `<YYYYMMDD-HHMMSS>/` containing `run.json` and
+    /// `REPORT.md`. The `last_report_path` field on `curator_state`
+    /// points at the most recent dir; `CuratorViewModel` resolves the
+    /// JSON/Markdown files relative to it.
+    public nonisolated var curatorLogsDir: String { home + "/logs/curator" }
+    /// JSON-encoded curator state (v0.12+). Filename has no extension
+    /// despite holding JSON — Hermes writes it via
+    /// `~/.hermes/skills/.curator_state`. Carries last-run metadata,
+    /// run count, pause flag, and the path to the most recent report.
+    public nonisolated var curatorStateFile: String { home + "/skills/.curator_state" }
     public nonisolated var scarfDir: String { home + "/scarf" }
     public nonisolated var projectsRegistry: String { scarfDir + "/projects.json" }
 

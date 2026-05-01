@@ -11,6 +11,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     // Interact
     case chat = "Chat"
     case memory = "Memory"
+    case curator = "Curator"
     case skills = "Skills"
     // Configure (Phase 2/3 additions)
     case platforms = "Platforms"
@@ -40,6 +41,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .projects: return "Projects"
         case .chat: return "Chat"
         case .memory: return "Memory"
+        case .curator: return "Curator"
         case .skills: return "Skills"
         case .platforms: return "Platforms"
         case .personalities: return "Personalities"
@@ -67,6 +69,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .projects: return "square.grid.2x2"
         case .chat: return "text.bubble"
         case .memory: return "brain"
+        case .curator: return "sparkles"
         case .skills: return "lightbulb"
         case .platforms: return "dot.radiowaves.left.and.right"
         case .personalities: return "theatermasks"

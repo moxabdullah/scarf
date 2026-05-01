@@ -14,21 +14,36 @@ struct SidebarView: View {
     @Environment(AppCoordinator.self) private var coordinator
     @Environment(ServerLiveStatusRegistry.self) private var liveRegistry
     @Environment(\.serverContext) private var serverContext
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
 
-    private static let sections: [Section] = [
-        Section(title: "Monitor",  items: [.dashboard, .insights, .sessions, .activity]),
-        Section(title: "Projects", items: [.projects]),
-        Section(title: "Interact", items: [.chat, .memory, .skills]),
-        Section(title: "Configure", items: [.platforms, .personalities, .quickCommands, .credentialPools, .plugins, .webhooks, .profiles]),
-        Section(title: "Manage",   items: [.tools, .mcpServers, .gateway, .cron, .health, .logs, .settings]),
-    ]
+    /// Capability-gated sections. Curator is v0.12+ only; older Hermes
+    /// hosts get the same Interact section minus the Curator row.
+    /// Building the list lazily off the env keeps the sidebar honest
+    /// when the user reconnects to a different-version host.
+    private var sections: [Section] {
+        let caps = capabilitiesStore?.capabilities
+
+        var interact: [SidebarSection] = [.chat, .memory]
+        if caps?.hasCurator ?? false {
+            interact.append(.curator)
+        }
+        interact.append(.skills)
+
+        return [
+            Section(title: "Monitor",  items: [.dashboard, .insights, .sessions, .activity]),
+            Section(title: "Projects", items: [.projects]),
+            Section(title: "Interact", items: interact),
+            Section(title: "Configure", items: [.platforms, .personalities, .quickCommands, .credentialPools, .plugins, .webhooks, .profiles]),
+            Section(title: "Manage",   items: [.tools, .mcpServers, .gateway, .cron, .health, .logs, .settings]),
+        ]
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             header
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    ForEach(Self.sections) { section in
+                    ForEach(sections) { section in
                         sectionView(section)
                     }
                 }
