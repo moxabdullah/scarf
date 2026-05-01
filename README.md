@@ -19,11 +19,43 @@
   <a href="https://www.buymeacoffee.com/awizemann"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="28"></a>
 </p>
 
-## What's New in 2.5
+## What's New in 2.6
 
-### ScarfGo — the iPhone companion ships in public TestFlight
+### Hermes v2026.4.30 (v0.12.0) catch-up
 
-Same Hermes server you've been running on your Mac — now reachable from your phone over SSH. Multi-server, project-scoped chat, session resume, memory editor, cron list, skills tree, settings (read), all native iOS. Pure-Swift SSH (Citadel under the hood — no `ssh` binary needed on iOS). Per-project chat writes the same Scarf-managed `AGENTS.md` block the Mac app does, so the agent boots with the same project context regardless of which client opened the session.
+The largest single Hermes update Scarf has had to follow since v0.10's Tool Gateway. Every new surface is **capability-gated** through `HermesCapabilities` (parses `hermes --version` once per server) — on a v0.11 host, Scarf 2.6 looks identical to Scarf 2.5.2 and the new affordances are hidden.
+
+- **Autonomous Curator (Mac sidebar + iOS panel).** `hermes curator` self-prunes / -consolidates the skill library on a 7-day cycle. Status panel, **Run Now / Pause / Resume** actions, three leaderboards (least-recently-active / most-active / least-active) with activity / use / view / patch counters, inline pin toggles, restore-archived sheet. Last-run REPORT.md renders inline. New "Curator" sidebar item under Interact (between Memory and Skills); ScarfGo gets a Curator nav row under System.
+- **Multimodal image input in chat.** Drag/drop, paste, or NSOpenPanel multi-pick on Mac; PhotosPicker on iOS (up to 5 images per message). `ImageEncoder` downsamples to 1568px long-edge JPEG q=0.85, **detached only** so encoding never blocks MainActor. Hermes routes the prompt to a vision-capable model automatically. Image-only sends are valid — vision models accept "describe this" with no caption.
+- **5 new inference providers** in the model picker — GMI Cloud, Azure AI Foundry, LM Studio (now first-class), MiniMax (OAuth), Tencent TokenHub. Provider IDs match `HERMES_OVERLAYS` in `hermes_cli/providers.py` exactly.
+- **Microsoft Teams + Yuanbao** as the 18th and 19th gateway platforms in the Platforms tab.
+- **Read-only Kanban view (Mac).** Paginated table over `hermes kanban list --json` filtered by status, with status badges, meta chips (id / assignee / workspace / skills), and 5s polling while foregrounded. Create / claim / dispatch UI is deferred until upstream stabilizes the multi-profile collab layer (which was reverted in v0.12).
+- **Skills v0.12 surface.** Direct-URL install (`hermes skills install <https-url>`) via a new "Install from URL…" toolbar button on Mac; reload via `hermes skills audit`; `skills.disabled` rendered as strikethrough + an "OFF" pill on Mac and iOS rows; Curator pin badge from `~/.hermes/skills/.curator_state` surfaced as a pin glyph.
+- **Cron — `--workdir` field (Mac).** Inject `AGENTS.md` / `CLAUDE.md` / `.cursorrules` from a working directory and pin cwd for terminal/file/code_exec tools. Scarf's CronJobEditor adds the field; both create and edit paths forward the flag.
+- **Settings deltas.** New **Caching & Redaction** section under Advanced — prompt cache TTL picker (5m / 1h), redact-secrets-in-patches toggle (now off by default on v0.12; flip back on here), runtime metadata footer toggle. TTS provider list gains **piper** (native local TTS); terminal backend list gains **vercel** (Vercel Sandbox).
+- **`auxiliary.curator` aux task.** Curator's review fork can run on a separate model from the main agent. `auxiliary.flush_memories` was removed in v0.12 — Scarf preserves the row on v0.11 hosts (inverse gate) and hides it on v0.12.
+- **ScarfGo catch-up.** Read-only Webhooks / Plugins / Profiles tabs parity-match the Mac surfaces (no mutating CLI verbs on the phone). Yellow Hermes-version banner nudges pre-v0.12 hosts to upgrade; renders only when the connected target is below v0.12.
+
+### Chat fixes (post-merge round)
+
+A focused pass over GitHub issue triage:
+
+- **Typing lag in the chat composer ([#67](https://github.com/awizemann/scarf/issues/67))** — `RichChatInputBar.updateMenuState()` was firing on every keystroke and writing two state vars per `.onChange`, tripping SwiftUI's "action tried to update multiple times per frame" warning. Composer now coalesces writes, short-circuits when the slash menu can't apply, and watches `commands.count` instead of allocating `commands.map(\.id)` per keystroke.
+- **Chat font-size slider now actually scales rich chat content ([#68](https://github.com/awizemann/scarf/issues/68))** — `\.dynamicTypeSize` couldn't reach the fixed-point ScarfFont tokens. New `\.chatFontScale` env value plumbed through bubbles, markdown, and code blocks.
+- **Placeholder ghosting on first keystroke ([#65](https://github.com/awizemann/scarf/issues/65))** — `TextEditor`'s NSTextView surfaces a typed glyph one frame before the SwiftUI binding propagates. Pinned an opaque background behind the placeholder rect; switched the conditional to `.opacity(...)` for view-tree stability.
+- **Draft text leaked between conversations ([#62](https://github.com/awizemann/scarf/issues/62))** — composer `@State` survived session switches because the surrounding view tree was structurally identical. Bound `RichChatInputBar`'s identity to `richChat.sessionId`.
+- **Sent message rendered blank after navigating away ([#63](https://github.com/awizemann/scarf/issues/63))** — `loadSessionHistory` atomically replaced messages from a state.db that hadn't yet flushed the user's row. New per-session pending-user-messages cache survives `reset()` and re-injects entries until the DB catches up.
+- **Background completion notifications ([#64](https://github.com/awizemann/scarf/issues/64))** — new `ChatNotificationService` fires a local UNUserNotificationCenter banner when a prompt completes while Scarf isn't the foreground app. Settings → Display → Feedback → "Notify when Hermes finishes" toggle, default on.
+- **Per-message TTS playback ([#66](https://github.com/awizemann/scarf/issues/66))** — small speaker glyph on each settled assistant bubble. Tap to read aloud through `AVSpeechSynthesizer` with the user's macOS Spoken Content default voice.
+- **ACP control-message timeout 30s → 60s ([#61](https://github.com/awizemann/scarf/issues/61))** — gives `initialize` / `session/new` / `session/load` headroom against gateway-induced state.db lock contention.
+
+See the full [v2.6.0 release notes](https://github.com/awizemann/scarf/releases/tag/v2.6.0).
+
+**Previous releases:** see the [Release Notes Index](https://github.com/awizemann/scarf/wiki/Release-Notes-Index) on the wiki for v2.5, v2.3, v2.2, v2.0, v1.6, and earlier.
+
+## ScarfGo — the iPhone companion
+
+Same Hermes server you've been running on your Mac — reachable from your phone over SSH. Multi-server, project-scoped chat, session resume, memory editor, cron list, skills tree, settings (read), all native iOS. Pure-Swift SSH (Citadel under the hood — no `ssh` binary needed on iOS). Per-project chat writes the same Scarf-managed `AGENTS.md` block the Mac app does, so the agent boots with the same project context regardless of which client opened the session.
 
 **[Join the public TestFlight](https://testflight.apple.com/join/qCrRpcTz)** — the link is live now but only accepts new beta testers once Apple's Beta Review approves the first build. If you hit a "not accepting testers" splash, bookmark it and try again in 24–48h.
 
@@ -38,21 +70,6 @@ Same Hermes server you've been running on your Mac — now reachable from your p
 <p align="center"><sub><em>Tap any thumbnail to view full size. Servers list · Chat · Project dashboard (Site Status Checker template) · Skills browser · System tab.</em></sub></p>
 
 See the [ScarfGo wiki page](https://github.com/awizemann/scarf/wiki/ScarfGo) for the full feature tour, [ScarfGo Onboarding](https://github.com/awizemann/scarf/wiki/ScarfGo-Onboarding) for the SSH-key setup walkthrough, and [Platform Differences](https://github.com/awizemann/scarf/wiki/Platform-Differences) for what is and isn't shared between Mac and iOS.
-
-### Everything else in 2.5
-
-- **Portable project-scoped slash commands.** Author reusable prompt templates as Markdown files at `<project>/.scarf/slash-commands/<name>.md` with YAML frontmatter (name, description, argumentHint, optional model override). Invoke as `/<name> [args]` from chat — Scarf substitutes `{{argument}}` (with optional `default:` fallback) in the body and sends the expanded prompt to Hermes. Mac authoring tab + iOS read-only browser. Templates carry them via the new `slash-commands/` block in `.scarftemplate` bundles (schemaVersion 3). See [Slash Commands](https://github.com/awizemann/scarf/wiki/Slash-Commands) for the full schema.
-- **Hermes v2026.4.23 chat parity.** `/steer` non-interruptive guidance command, per-turn stopwatch on assistant bubbles, numbered keyboard shortcuts (1–9) on the permission sheet, git branch chip in the chat header. The new `messages.reasoning_content` and `sessions.api_call_count` columns surface as a richer reasoning disclosure + an "API" chip on session rows.
-- **Spotify + design-md skills.** Mac ships an in-app Spotify OAuth sheet (mirrors the v2.3 Nous Portal pattern); design-md gets a host-side `npx` prereq check on both platforms. SKILL.md frontmatter (`allowed_tools`, `related_skills`, `dependencies`) renders as chip rows. A "What's New" pill on the Skills tab tells you when remote skills changed since you last looked.
-- **Mac global Sessions: project filter + project badges** — parity with ScarfGo's Sessions tab. The list grows a filter Menu (All projects / Unattributed / each registered project) and each row carries a tinted folder chip with the project name when attributed.
-- **Human-readable cron schedules everywhere.** New `CronScheduleFormatter` in ScarfCore translates the common cron shapes into English phrases and falls back to the raw expression on anything custom. Mac and iOS render the same.
-- **Mac design-system overhaul.** Rust palette, typed token bundle (`ScarfColor`, `ScarfFont`, `ScarfSpace`, `ScarfRadius`), reusable components (`ScarfPageHeader`, `ScarfCard`, `ScarfBadge`, `ScarfTextField`, four button styles), redesigned 3-pane chat. iOS adopts the same tokens with a hybrid Dynamic Type policy so accessibility scaling on body text is preserved. See [Design System](https://github.com/awizemann/scarf/wiki/Design-System) for the full reference.
-- **Under the hood** — `SessionAttributionService`, `ProjectContextBlock`, `CronScheduleFormatter`, `GitBranchService`, `SkillPrereqService`, `SkillSnapshotService`, `ProjectSlashCommandService`, and the ACP error triplet (`acpError` / `acpErrorHint` / `acpErrorDetails`) consolidated into ScarfCore so Mac and iOS consume one source of truth. 179 tests across 13 suites, three consecutive green runs. Several `try?` swallows in iOS lifecycle code now surface real failures (Keychain unlock errors no longer drop people into onboarding; partial Forget operations report what failed).
-- **iOS push notifications skeleton** — `NotificationRouter` ships with foreground presentation + a lock-screen "Approve / Deny" action category gated by `apnsEnabled = false`. Lights up when Hermes ships a server-side push sender + an APNs cert.
-
-See the full [v2.5.0 release notes](https://github.com/awizemann/scarf/releases/tag/v2.5.0).
-
-**Previous releases:** see the [Release Notes Index](https://github.com/awizemann/scarf/wiki/Release-Notes-Index) on the wiki for v2.3, v2.2, v2.0, v1.6, and earlier.
 
 ## Connect ScarfGo to your Hermes server
 
@@ -145,7 +162,7 @@ Custom, agent-generated dashboards for any project. Define stat boxes, charts, t
 - macOS 14.6+ (Sonoma) for Scarf
 - iOS 18.0+ for [ScarfGo](https://github.com/awizemann/scarf/wiki/ScarfGo) (the iPhone companion, public TestFlight from v2.5)
 - Xcode 16.0+ to build from source
-- [Hermes agent](https://github.com/hermes-ai/hermes-agent) v0.6.0+ installed at `~/.hermes/` on each target host (v0.11.0+ recommended for full v2.5 feature support — `/steer`, new state.db columns, design-md/spotify skills, SKILL.md frontmatter chips)
+- [Hermes agent](https://github.com/hermes-ai/hermes-agent) v0.6.0+ installed at `~/.hermes/` on each target host (v0.12.0+ recommended for full v2.6 feature support — autonomous Curator, multimodal image input, 5 new providers, Microsoft Teams + Yuanbao gateways, Kanban, Skills v0.12 surface, cron `--workdir`, prompt-cache TTL, Piper TTS, Vercel terminal)
 - For remote servers: SSH access (key-based), `sqlite3` on the remote (for atomic DB snapshots), and the `hermes` CLI resolvable from the remote user's `PATH` or at a path you specify per server. ScarfGo requires the same on every Hermes host it connects to.
 
 ### Compatibility
@@ -159,9 +176,10 @@ Scarf reads Hermes's SQLite database and parses CLI output from `hermes status`,
 | v0.8.0 (2026-04-08) | Verified |
 | v0.9.0 (2026-04-13) | Verified |
 | v0.10.0 (2026-04-16) | Verified (Tool Gateway introduced) |
-| v0.11.0 (2026-04-23) | **Verified — current target (recommended for full v2.5 feature support)** |
+| v0.11.0 (2026-04-23) | Verified |
+| v0.12.0 (2026-04-30) | **Verified — current target (recommended for full v2.6 feature support)** |
 
-Scarf 2.5 targets Hermes v0.11.0 for `/steer`, the new state.db columns (`messages.reasoning_content`, `sessions.api_call_count`), the new skills (design-md, spotify), the SKILL.md frontmatter chip surfaces, and the `hermes memory reset` toolbar action. Earlier Hermes versions remain supported for monitoring, sessions, file-based features, and ACP chat; v0.11-specific behavior degrades gracefully on older agents (`/steer` is harmless, new columns silently nil out).
+Scarf 2.6 targets Hermes v0.12.0 for the autonomous Curator, multimodal ACP image content blocks, the 5 new inference providers, Microsoft Teams + Yuanbao gateways, the read-only Kanban view, the Skills v0.12 surface (URL install / reload / disable badges / curator pin), cron `--workdir`, `auxiliary.curator`, `prompt_caching.cache_ttl`, the redaction toggle, the runtime metadata footer, Piper TTS, and the Vercel terminal backend. Every v0.12 surface is **capability-gated** — Scarf detects the host's Hermes version once per server connection (`hermes --version` → semver + `YYYY.M.D` parse) and hides v0.12-only UI on older hosts. v0.11.0 hosts keep the full v2.5 surface (`/steer`, `messages.reasoning_content`, `sessions.api_call_count`, design-md/spotify skills, SKILL.md frontmatter chips, `hermes memory reset`). Earlier Hermes versions remain supported for monitoring, sessions, file-based features, and ACP chat; new behavior degrades gracefully on older agents.
 
 If a Hermes update changes the database schema or CLI output format, Scarf may need to be updated. Check the [Health](#features) view for compatibility warnings.
 
