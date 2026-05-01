@@ -241,6 +241,36 @@ private struct SystemTab: View {
                 .listRowBackground(ScarfColor.backgroundSecondary)
             }
 
+            // v2.6: read-only mobile views over CLI-driven Hermes
+            // surfaces. Mac owns the create/edit paths; phones get a
+            // monitoring window into what the remote agent is honoring.
+            // None of these are capability-gated — the underlying
+            // `hermes plugins/profile/webhook list` verbs exist on
+            // both v0.11 and v0.12, so the read views work on either.
+            Section("Inspect") {
+                NavigationLink {
+                    WebhooksView(config: config)
+                } label: {
+                    Label("Webhooks", systemImage: "arrow.up.right.square")
+                }
+                .scarfGoCompactListRow()
+                .listRowBackground(ScarfColor.backgroundSecondary)
+                NavigationLink {
+                    PluginsView(config: config)
+                } label: {
+                    Label("Plugins", systemImage: "app.badge.checkmark")
+                }
+                .scarfGoCompactListRow()
+                .listRowBackground(ScarfColor.backgroundSecondary)
+                NavigationLink {
+                    ProfilesView(config: config)
+                } label: {
+                    Label("Profiles", systemImage: "person.2.crop.square.stack")
+                }
+                .scarfGoCompactListRow()
+                .listRowBackground(ScarfColor.backgroundSecondary)
+            }
+
             Section {
                 Toggle(isOn: $iCloudSyncEnabled) {
                     HStack(spacing: 10) {

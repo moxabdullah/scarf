@@ -42,6 +42,13 @@ struct DashboardView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // v2.6 Hermes-version banner. Renders only when the remote
+            // is pre-v0.12 and the user hasn't dismissed for this
+            // session. v0.12+ hosts get a tab with no banner above
+            // the picker; older hosts see the upgrade nudge inline so
+            // it's visible without burying it inside Settings.
+            HermesVersionBanner()
+
             Picker("View", selection: $selectedSection) {
                 Text("Overview").tag(Section.overview)
                 Text("Sessions").tag(Section.sessions)
