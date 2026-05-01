@@ -200,7 +200,12 @@ struct RichChatInputBar: View {
         .onChange(of: text) { _, _ in
             updateMenuState()
         }
-        .onChange(of: commands.map(\.id)) { _, _ in
+        // Watch `commands.count` rather than `commands.map(\.id)` — the
+        // mapped form allocates a fresh `[String]` on every body
+        // re-eval (i.e. every keystroke), which is wasted work even
+        // when the array compares equal. The count proxy fires when
+        // the agent advertises new commands.
+        .onChange(of: commands.count) { _, _ in
             updateMenuState()
         }
         .sheet(isPresented: $showCompressSheet) {
@@ -358,17 +363,37 @@ struct RichChatInputBar: View {
 
     private func updateMenuState() {
         let shouldShow = shouldShowMenu
+
+        // Common case: user is composing normal text and the menu is
+        // already hidden. Skip the filter computation + state writes
+        // entirely so onChange stays cheap. Without this guard typing
+        // recomputes `filteredCommands` on every keystroke even when
+        // the menu can't possibly appear.
+        guard shouldShow || showMenu else { return }
+
+        // Compute desired selection, then only write what changed.
+        // SwiftUI emits "onChange action tried to update multiple
+        // times per frame" when an onChange handler mutates more than
+        // one piece of state per frame; the warning correlates with
+        // unusable typing lag because each redundant write triggers
+        // another body re-eval.
+        let count = filteredCommands.count
+        let newSelection: Int
+        if count == 0 {
+            newSelection = 0
+        } else if selectedIndex >= count {
+            newSelection = count - 1
+        } else if selectedIndex < 0 {
+            newSelection = 0
+        } else {
+            newSelection = selectedIndex
+        }
+
         if shouldShow != showMenu {
             showMenu = shouldShow
         }
-        // Re-clamp selection whenever the filtered list may have shrunk.
-        let count = filteredCommands.count
-        if count == 0 {
-            selectedIndex = 0
-        } else if selectedIndex >= count {
-            selectedIndex = count - 1
-        } else if selectedIndex < 0 {
-            selectedIndex = 0
+        if newSelection != selectedIndex {
+            selectedIndex = newSelection
         }
     }
 
