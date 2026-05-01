@@ -161,7 +161,10 @@ final class CronViewModel {
             for skill in newSkills where !skill.isEmpty { args += ["--skill", skill] }
         }
         if let script { args += ["--script", script] }
-        if let workdir, !workdir.isEmpty { args += ["--workdir", workdir] }
+        // `nil` = caller didn't touch the field (omit the flag). Empty string
+        // = user cleared an existing workdir; Hermes documents `--workdir ""`
+        // on edit as the explicit clear gesture, mirroring the `--script` shape.
+        if let workdir { args += ["--workdir", workdir] }
         runAndReload(args, success: "Updated")
     }
 
