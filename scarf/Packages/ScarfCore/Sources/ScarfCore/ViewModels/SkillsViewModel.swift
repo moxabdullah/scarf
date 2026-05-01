@@ -152,9 +152,14 @@ public final class SkillsViewModel {
                 }
                 if let baseIndent = disabledIndent {
                     let leading = raw.prefix { $0 == " " || $0 == "\t" }.count
-                    if leading <= baseIndent && !trimmed.isEmpty {
-                        // Out of the `disabled:` block.
-                        break
+                    if !trimmed.isEmpty {
+                        // PyYAML's default `yaml.dump` emits list items at the
+                        // same indent as the parent key, so `- foo` lines for
+                        // `disabled:` arrive at `leading == baseIndent`. Only
+                        // a strictly shallower indent — or a same-indent line
+                        // that isn't a list item (sibling key) — ends the block.
+                        if leading < baseIndent { break }
+                        if leading == baseIndent && !trimmed.hasPrefix("- ") { break }
                     }
                     if trimmed.hasPrefix("- ") {
                         let name = trimmed.dropFirst(2).trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
