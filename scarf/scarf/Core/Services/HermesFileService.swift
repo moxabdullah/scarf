@@ -129,7 +129,8 @@ struct HermesFileService: Sendable {
             skillsHub: aux("skills_hub"),
             approval: aux("approval"),
             mcp: aux("mcp"),
-            flushMemories: aux("flush_memories")
+            flushMemories: aux("flush_memories"),
+            curator: aux("curator")
         )
 
         let security = SecuritySettings(
@@ -287,7 +288,10 @@ struct HermesFileService: Sendable {
             matrix: matrix,
             mattermost: mattermost,
             whatsapp: whatsapp,
-            homeAssistant: homeAssistant
+            homeAssistant: homeAssistant,
+            cacheTTL: str("prompt_caching.cache_ttl", default: "5m"),
+            redactionEnabled: bool("redaction.enabled", default: false),
+            runtimeMetadataFooter: bool("agent.runtime_metadata_footer", default: false)
         )
     }
 
@@ -1570,6 +1574,39 @@ struct HermesFileService: Sendable {
                 : error.diagnosticStderr)
         } catch {
             return (-1, error.localizedDescription)
+        }
+    }
+
+    /// Split-stream variant of `runHermesCLI`. Use this when you need to
+    /// parse stdout (e.g. JSON output) without stderr contamination, and
+    /// surface stderr separately as a user-facing error message. Transport
+    /// failures land in `stderr` with an empty `stdout`.
+    @discardableResult
+    nonisolated func runHermesCLISplit(args: [String], timeout: TimeInterval = 60, stdinInput: String? = nil) -> (exitCode: Int32, stdout: String, stderr: String) {
+        let binary: String
+        if context.isRemote {
+            binary = context.paths.hermesBinary
+        } else {
+            guard let local = hermesBinaryPath() else { return (-1, "", "hermes binary not found") }
+            binary = local
+        }
+
+        let stdinData = stdinInput?.data(using: .utf8)
+        do {
+            let result = try transport.runProcess(
+                executable: binary,
+                args: args,
+                stdin: stdinData,
+                timeout: timeout
+            )
+            return (result.exitCode, result.stdoutString, result.stderrString)
+        } catch let error as TransportError {
+            let message = error.diagnosticStderr.isEmpty
+                ? (error.errorDescription ?? "transport error")
+                : error.diagnosticStderr
+            return (-1, "", message)
+        } catch {
+            return (-1, "", error.localizedDescription)
         }
     }
 

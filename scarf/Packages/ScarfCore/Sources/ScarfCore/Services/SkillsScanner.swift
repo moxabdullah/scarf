@@ -13,7 +13,12 @@ import os
 public enum SkillsScanner: Sendable {
     private static let logger = Logger(subsystem: "com.scarf", category: "SkillsScanner")
 
-    public static func scan(context: ServerContext, transport: any ServerTransport) -> [HermesSkillCategory] {
+    public static func scan(
+        context: ServerContext,
+        transport: any ServerTransport,
+        disabledNames: Set<String> = [],
+        pinnedNames: Set<String> = []
+    ) -> [HermesSkillCategory] {
         let dir = context.paths.skillsDir
         // Fresh install: skills/ may not exist yet — return [] without
         // logging an error.
@@ -59,7 +64,9 @@ public enum SkillsScanner: Sendable {
                             requiredConfig: requiredConfig,
                             allowedTools: v011.allowedTools,
                             relatedSkills: v011.relatedSkills,
-                            dependencies: v011.dependencies
+                            dependencies: v011.dependencies,
+                            enabled: !disabledNames.contains(skillName),
+                            pinned: pinnedNames.contains(skillName)
                         )
                     }
 

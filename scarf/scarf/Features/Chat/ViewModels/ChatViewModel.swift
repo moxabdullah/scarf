@@ -254,14 +254,32 @@ final class ChatViewModel {
     // MARK: - Send Message
 
     func sendText(_ text: String) {
+        sendText(text, images: [])
+    }
+
+    /// v0.12+ overload: forward image attachments alongside the text.
+    /// Empty `images` keeps the legacy v0.11 wire shape; non-empty images
+    /// only flow when `HermesCapabilities.hasACPImagePrompts` is true
+    /// (the input bar gates the attachment UI on the same flag, so a
+    /// non-empty array reaching here means we've already verified the
+    /// agent supports it).
+    ///
+    /// Terminal mode silently drops attachments — there's no way to
+    /// pipe binary content through the TTY. Surface a one-shot warning
+    /// so the user knows.
+    func sendText(_ text: String, images: [ChatImageAttachment]) {
         if displayMode == .richChat {
             if let client = acpClient {
-                sendViaACP(client: client, text: text)
+                sendViaACP(client: client, text: text, images: images)
             } else {
                 // Auto-start ACP and send the queued message
-                autoStartACPAndSend(text: text)
+                autoStartACPAndSend(text: text, images: images)
             }
         } else if let tv = terminalView {
+            if !images.isEmpty {
+                logger.warning("Terminal-mode chat dropped \(images.count) image attachment(s) — image input only works in ACP rich-chat mode")
+                acpError = "Image attachments require ACP mode (rich chat)."
+            }
             sendToTerminal(tv, text: text + "\r")
         }
     }
@@ -274,7 +292,7 @@ final class ChatViewModel {
     /// user never interacted with; those can be garbage-collected by Hermes
     /// between the DB read and ACP `session/load`, producing a silent prompt
     /// failure with no UI feedback.
-    private func autoStartACPAndSend(text: String) {
+    private func autoStartACPAndSend(text: String, images: [ChatImageAttachment] = []) {
         // Show the user message immediately
         richChatViewModel.addUserMessage(text: text)
 
@@ -313,7 +331,7 @@ final class ChatViewModel {
                 acpStatus = "Connected (\(resolvedSessionId.prefix(12)))"
 
                 // Now send the queued prompt
-                sendViaACP(client: client, text: text)
+                sendViaACP(client: client, text: text, images: images)
             } catch {
                 acpStatus = "Failed"
                 await recordACPFailure(error, client: client, context: "Auto-start ACP failed")
@@ -350,7 +368,7 @@ final class ChatViewModel {
         return ProjectSlashCommandService(context: context).expand(cmd, withArgument: argument)
     }
 
-    private func sendViaACP(client: ACPClient, text: String) {
+    private func sendViaACP(client: ACPClient, text: String, images: [ChatImageAttachment] = []) {
         guard let sessionId = richChatViewModel.sessionId else {
             clearACPErrorState()
             acpError = "No session ID — cannot send"
@@ -390,7 +408,7 @@ final class ChatViewModel {
         }
         acpPromptTask = Task { @MainActor in
             do {
-                let result = try await client.sendPrompt(sessionId: sessionId, text: wireText)
+                let result = try await client.sendPrompt(sessionId: sessionId, text: wireText, images: images)
                 acpStatus = "Ready"
                 richChatViewModel.handleACPEvent(
                     .promptComplete(sessionId: sessionId, response: result)

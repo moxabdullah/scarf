@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import ScarfCore
 @testable import scarf
 
 /// Tests that ``CredentialPoolsOAuthGate`` steers each known provider to

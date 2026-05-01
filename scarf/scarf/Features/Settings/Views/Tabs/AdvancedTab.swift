@@ -5,8 +5,16 @@ import UniformTypeIdentifiers
 
 /// Advanced tab — network, compression, checkpoints, logging, delegation, file read cap,
 /// cron wrap, config diagnostics, backup/restore, paths, raw config.
+///
+/// v0.12 added a "Caching & Redaction" section near the top: prompt cache
+/// TTL picker (5m / 1h), the redaction toggle (off-by-default in v0.12 —
+/// we surface a toggle so security-sensitive users can flip it back on),
+/// and the runtime metadata footer toggle. All three are gated on
+/// `HermesCapabilities` so a v0.11 host doesn't see toggles that write
+/// keys it ignores.
 struct AdvancedTab: View {
     @Bindable var viewModel: SettingsViewModel
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
     @State private var showRawConfig = false
     @State private var showRestoreConfirm = false
     @State private var pendingRestorePath: String?
@@ -15,6 +23,10 @@ struct AdvancedTab: View {
     @State private var showDiagnostics = false
 
     var body: some View {
+        if capabilitiesStore?.capabilities.hasPromptCacheTTL ?? false {
+            v012CachingSection
+        }
+
         SettingsSection(title: "Network", icon: "network") {
             ToggleRow(label: "Force IPv4", isOn: viewModel.config.forceIPv4) { viewModel.setForceIPv4($0) }
         }
@@ -97,6 +109,32 @@ struct AdvancedTab: View {
         backupSection
         pathsSection
         rawConfigSection
+    }
+
+    /// Caching, redaction, and runtime-metadata footer — all v0.12+
+    /// knobs. The cache_ttl picker is two options today (5m default,
+    /// 1h opt-in); when Hermes adds more they should be surfaced here
+    /// without changing the writer (`hermes config set` accepts arbitrary
+    /// scalars, Hermes validates).
+    @ViewBuilder
+    private var v012CachingSection: some View {
+        SettingsSection(title: "Caching & Redaction", icon: "lock.shield") {
+            PickerRow(
+                label: "Prompt Cache TTL",
+                selection: viewModel.config.cacheTTL,
+                options: ["5m", "1h"]
+            ) { viewModel.setSetting("prompt_caching.cache_ttl", value: $0) }
+
+            ToggleRow(
+                label: "Redact secrets in patches",
+                isOn: viewModel.config.redactionEnabled
+            ) { viewModel.setSetting("redaction.enabled", value: $0 ? "true" : "false") }
+
+            ToggleRow(
+                label: "Runtime metadata footer",
+                isOn: viewModel.config.runtimeMetadataFooter
+            ) { viewModel.setSetting("agent.runtime_metadata_footer", value: $0 ? "true" : "false") }
+        }
     }
 
     private var backupSection: some View {

@@ -266,14 +266,47 @@ public actor ACPClient {
     // MARK: - Messaging
 
     public func sendPrompt(sessionId: String, text: String) async throws -> ACPPromptResult {
+        try await sendPrompt(sessionId: sessionId, text: text, images: [])
+    }
+
+    /// v0.12+ overload: forward zero or more image attachments alongside
+    /// the user's text. Each attachment becomes a separate
+    /// `ImageContentBlock` in the ACP `prompt` content array — matches
+    /// the shape Hermes' `acp_adapter/server.py` expects (text first,
+    /// then image blocks). Hermes routes the resulting payload to a
+    /// vision-capable model automatically; the producer side only has
+    /// to deliver the bytes.
+    ///
+    /// Pre-v0.12 Hermes installs accepted only a single `text` block.
+    /// Callers gate this overload on
+    /// `HermesCapabilitiesStore.capabilities.hasACPImagePrompts` so we
+    /// don't send blocks an older agent would silently drop.
+    public func sendPrompt(
+        sessionId: String,
+        text: String,
+        images: [ChatImageAttachment]
+    ) async throws -> ACPPromptResult {
         statusMessage = "Sending prompt..."
         let messageId = UUID().uuidString
+
+        // Always include the text block, even when empty — keeps the
+        // server-side text-extraction path stable regardless of whether
+        // the user sent text alongside the image(s).
+        var promptBlocks: [[String: Any]] = [
+            ["type": "text", "text": text] as [String: Any],
+        ]
+        for image in images {
+            promptBlocks.append([
+                "type": "image",
+                "data": image.base64Data,
+                "mimeType": image.mimeType,
+            ] as [String: Any])
+        }
+
         let params: [String: AnyCodable] = [
             "sessionId": AnyCodable(sessionId),
             "messageId": AnyCodable(messageId),
-            "prompt": AnyCodable([
-                ["type": "text", "text": text] as [String: Any],
-            ] as [Any]),
+            "prompt": AnyCodable(promptBlocks as [Any]),
         ]
         let result = try await sendRequest(method: "session/prompt", params: params)
         let dict = result?.dictValue ?? [:]

@@ -258,7 +258,16 @@ public struct VoiceSettings: Sendable, Equatable {
     )
 }
 
-/// Eight sub-models that share the same provider/model/base_url/api_key/timeout shape.
+/// Per-task auxiliary model overrides.
+///
+/// `flush_memories` was removed in Hermes v0.12 but remains alive on
+/// pre-v0.12 hosts — the field is preserved here so the YAML parser
+/// can round-trip it and `AuxiliaryTab` can render the row when
+/// `HermesCapabilities.hasFlushMemoriesAux` is set. On v0.12+ the
+/// field stays empty and is never surfaced.
+/// `curator` was added in v0.12 — Curator's review fork uses its own
+/// model so users can keep main-model spend separate from background
+/// maintenance.
 public struct AuxiliarySettings: Sendable, Equatable {
     public var vision: AuxiliaryModel
     public var webExtract: AuxiliaryModel
@@ -267,7 +276,10 @@ public struct AuxiliarySettings: Sendable, Equatable {
     public var skillsHub: AuxiliaryModel
     public var approval: AuxiliaryModel
     public var mcp: AuxiliaryModel
+    /// pre-v0.12 only; on v0.12+ this stays `.empty` and the row is hidden.
     public var flushMemories: AuxiliaryModel
+    /// v0.12+; pre-v0.12 Hermes installs ignore this slot.
+    public var curator: AuxiliaryModel
 
 
     public init(
@@ -278,7 +290,8 @@ public struct AuxiliarySettings: Sendable, Equatable {
         skillsHub: AuxiliaryModel,
         approval: AuxiliaryModel,
         mcp: AuxiliaryModel,
-        flushMemories: AuxiliaryModel
+        flushMemories: AuxiliaryModel,
+        curator: AuxiliaryModel
     ) {
         self.vision = vision
         self.webExtract = webExtract
@@ -288,6 +301,7 @@ public struct AuxiliarySettings: Sendable, Equatable {
         self.approval = approval
         self.mcp = mcp
         self.flushMemories = flushMemories
+        self.curator = curator
     }
     public nonisolated static let empty = AuxiliarySettings(
         vision: .empty,
@@ -297,7 +311,8 @@ public struct AuxiliarySettings: Sendable, Equatable {
         skillsHub: .empty,
         approval: .empty,
         mcp: .empty,
-        flushMemories: .empty
+        flushMemories: .empty,
+        curator: .empty
     )
 }
 
@@ -634,6 +649,24 @@ public struct HermesConfig: Sendable {
     /// platform. Scarf reads for display; edits go through Hermes CLI.
     public var platformToolsets: [String: [String]]
 
+    // -- Hermes v0.12 additions ----------------------------------------
+    // Defaults match the Hermes v0.12 defaults so that an absent key in
+    // config.yaml looks identical to a freshly-installed v0.12 host.
+
+    /// `prompt_caching.cache_ttl` — `"5m"` (default) or `"1h"`. Hermes
+    /// v0.12 added the 1-hour ceiling for users with prompt-cache-heavy
+    /// workloads (long agent loops with stable system prompts).
+    public var cacheTTL: String
+    /// `redaction.enabled` — flipped from `true` to `false` as the
+    /// upstream default in v0.12 because the substitution corrupted
+    /// patches and API payloads. Surface a toggle so users with hard
+    /// redaction requirements can opt back in.
+    public var redactionEnabled: Bool
+    /// `agent.runtime_metadata_footer` — opt-in compact footer on each
+    /// final reply (provider/model/cost/turn count). Off by default;
+    /// useful for cost auditing and screen-recording demos.
+    public var runtimeMetadataFooter: Bool
+
     // Grouped blocks
     public var display: DisplaySettings
     public var terminal: TerminalSettings
@@ -711,8 +744,14 @@ public struct HermesConfig: Sendable {
         matrix: MatrixSettings,
         mattermost: MattermostSettings,
         whatsapp: WhatsAppSettings,
-        homeAssistant: HomeAssistantSettings
+        homeAssistant: HomeAssistantSettings,
+        cacheTTL: String = "5m",
+        redactionEnabled: Bool = false,
+        runtimeMetadataFooter: Bool = false
     ) {
+        self.cacheTTL = cacheTTL
+        self.redactionEnabled = redactionEnabled
+        self.runtimeMetadataFooter = runtimeMetadataFooter
         self.model = model
         self.provider = provider
         self.maxTurns = maxTurns

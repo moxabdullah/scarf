@@ -131,19 +131,24 @@ final class CronViewModel {
         }
     }
 
-    func createJob(schedule: String, prompt: String, name: String, deliver: String, skills: [String], script: String, repeatCount: String) {
+    func createJob(schedule: String, prompt: String, name: String, deliver: String, skills: [String], script: String, repeatCount: String, workdir: String = "") {
         var args = ["cron", "create"]
         if !name.isEmpty { args += ["--name", name] }
         if !deliver.isEmpty { args += ["--deliver", deliver] }
         if !repeatCount.isEmpty { args += ["--repeat", repeatCount] }
         for skill in skills where !skill.isEmpty { args += ["--skill", skill] }
         if !script.isEmpty { args += ["--script", script] }
+        // v0.12+: --workdir injects AGENTS.md/CLAUDE.md context and pins
+        // cwd for terminal/file/code_exec tools. Hermes pre-v0.12 doesn't
+        // know the flag — argparse rejects unknown args, so the form
+        // omits the flag when the field is empty.
+        if !workdir.isEmpty { args += ["--workdir", workdir] }
         args.append(schedule)
         if !prompt.isEmpty { args.append(prompt) }
         runAndReload(args, success: "Job created")
     }
 
-    func updateJob(id: String, schedule: String?, prompt: String?, name: String?, deliver: String?, repeatCount: String?, newSkills: [String]?, clearSkills: Bool, script: String?) {
+    func updateJob(id: String, schedule: String?, prompt: String?, name: String?, deliver: String?, repeatCount: String?, newSkills: [String]?, clearSkills: Bool, script: String?, workdir: String? = nil) {
         var args = ["cron", "edit", id]
         if let schedule, !schedule.isEmpty { args += ["--schedule", schedule] }
         if let prompt, !prompt.isEmpty { args += ["--prompt", prompt] }
@@ -156,6 +161,10 @@ final class CronViewModel {
             for skill in newSkills where !skill.isEmpty { args += ["--skill", skill] }
         }
         if let script { args += ["--script", script] }
+        // `nil` = caller didn't touch the field (omit the flag). Empty string
+        // = user cleared an existing workdir; Hermes documents `--workdir ""`
+        // on edit as the explicit clear gesture, mirroring the `--script` shape.
+        if let workdir { args += ["--workdir", workdir] }
         runAndReload(args, success: "Updated")
     }
 

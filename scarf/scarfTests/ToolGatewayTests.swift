@@ -55,9 +55,35 @@ import ScarfCore
         #expect(ids.contains("nous"), "Nous Portal must appear after overlay merge")
         #expect(ids.contains("openai-codex"), "OpenAI Codex overlay must appear")
         #expect(ids.contains("qwen-oauth"), "Qwen OAuth overlay must appear")
+        // v0.12 additions — IDs must match HERMES_OVERLAYS in
+        // hermes-agent/hermes_cli/providers.py exactly. Drift here
+        // means the picker can't reach the new providers.
+        #expect(ids.contains("gmi"), "GMI Cloud overlay must appear (v0.12)")
+        #expect(ids.contains("azure-foundry"), "Azure AI Foundry overlay must appear (v0.12)")
+        #expect(ids.contains("lmstudio"), "LM Studio overlay must appear (v0.12)")
+        #expect(ids.contains("minimax-oauth"), "MiniMax OAuth overlay must appear (v0.12)")
+        #expect(ids.contains("tencent-tokenhub"), "Tencent TokenHub overlay must appear (v0.12)")
         // Cached providers still present.
         #expect(ids.contains("anthropic"))
         #expect(ids.contains("openai"))
+    }
+
+    @Test func v012OverlayProvidersCarryCorrectAuthTypes() throws {
+        // The auth-type drives whether Settings shows an API-key field,
+        // an OAuth flow, or external-process wiring. Locking the v0.12
+        // additions here so a typo doesn't quietly land users in the
+        // wrong setup flow.
+        let overlays = ModelCatalogService.overlayOnlyProviders
+        #expect(overlays["gmi"]?.authType == .apiKey)
+        #expect(overlays["azure-foundry"]?.authType == .apiKey)
+        #expect(overlays["lmstudio"]?.authType == .apiKey)
+        #expect(overlays["minimax-oauth"]?.authType == .oauthExternal)
+        #expect(overlays["tencent-tokenhub"]?.authType == .apiKey)
+        // None of the v0.12 additions are subscription-gated (only Nous
+        // Portal is).
+        for id in ["gmi", "azure-foundry", "lmstudio", "minimax-oauth", "tencent-tokenhub"] {
+            #expect(overlays[id]?.subscriptionGated == false, "\(id) shouldn't be subscription-gated")
+        }
     }
 
     @Test func nousPortalSortsFirst() throws {

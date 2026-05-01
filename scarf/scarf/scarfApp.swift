@@ -196,12 +196,19 @@ private struct ContextBoundRoot: View {
     @State private var coordinator: AppCoordinator
     @State private var fileWatcher: HermesFileWatcher
     @State private var chatViewModel: ChatViewModel
+    /// Per-window snapshot of the target Hermes installation's capability
+    /// flags. Drives sidebar visibility (Curator, Kanban only on v0.12+),
+    /// settings rows (curator aux added on v0.12), and version banners.
+    /// Refreshes once on init; explicit `refresh()` call rerun after a
+    /// `hermes update`.
+    @State private var capabilities: HermesCapabilitiesStore
 
     init(context: ServerContext) {
         self.context = context
         _coordinator = State(initialValue: AppCoordinator())
         _fileWatcher = State(initialValue: HermesFileWatcher(context: context))
         _chatViewModel = State(initialValue: ChatViewModel(context: context))
+        _capabilities = State(initialValue: HermesCapabilitiesStore(context: context))
     }
 
     var body: some View {
@@ -209,6 +216,8 @@ private struct ContextBoundRoot: View {
             .environment(coordinator)
             .environment(fileWatcher)
             .environment(chatViewModel)
+            .environment(capabilities)
+            .hermesCapabilities(capabilities)
             // Per-window title shows which server this window is bound to.
             // Local: "Scarf — Local". Remote: "Scarf — Mardon Mac Mini".
             // The colored dot lives inside the toolbar switcher; the window

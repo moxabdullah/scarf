@@ -53,6 +53,13 @@ public enum KnownPlatforms {
         HermesToolPlatform(name: "feishu", displayName: "Feishu", icon: "message.badge.circle"),
         HermesToolPlatform(name: "mattermost", displayName: "Mattermost", icon: "bubble.left.and.exclamationmark.bubble.right"),
         HermesToolPlatform(name: "imessage", displayName: "iMessage", icon: "message.fill"),
+        // -- v0.12 additions ---------------------------------------------
+        // Yuanbao is a native gateway adapter (18th platform); Microsoft
+        // Teams ships as a plugin (19th). PlatformDetail surfaces the
+        // distinction in the setup copy. Names match Hermes's gateway
+        // platform identifiers.
+        HermesToolPlatform(name: "yuanbao", displayName: "Yuanbao 元宝", icon: "bubble.left.and.bubble.right.fill"),
+        HermesToolPlatform(name: "microsoft-teams", displayName: "Microsoft Teams", icon: "person.2.fill"),
     ]
 
     public static func icon(for platform: String) -> String {
@@ -70,6 +77,8 @@ public enum KnownPlatforms {
         case "feishu": return "message.badge.circle"
         case "mattermost": return "bubble.left.and.exclamationmark.bubble.right"
         case "imessage": return "message.fill"
+        case "yuanbao": return "bubble.left.and.bubble.right.fill"
+        case "microsoft-teams": return "person.2.fill"
         default: return "bubble.left"
         }
     }

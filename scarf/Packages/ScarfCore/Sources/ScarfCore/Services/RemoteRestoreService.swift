@@ -436,7 +436,14 @@ public final class RemoteRestoreService: @unchecked Sendable {
 
     // MARK: - Helpers
 
+    /// Mac-only: iOS doesn't ship `/usr/bin/unzip` and Foundation's
+    /// `Process` is unavailable in the iOS SDK. Restore is initiated from
+    /// the Mac app; the iOS stub throws so any accidental call surfaces a
+    /// clear message instead of a link-time failure.
     private static func unzipArchive(at archive: URL, into dest: URL) throws {
+        #if os(iOS)
+        throw RestoreError.archiveUnreadable("Restore unzip is not supported on iOS — run the restore from the Mac app.")
+        #else
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
         proc.arguments = ["-q", archive.path, "-d", dest.path]
@@ -454,6 +461,7 @@ public final class RemoteRestoreService: @unchecked Sendable {
                 .flatMap { $0.flatMap { String(data: $0, encoding: .utf8) } } ?? ""
             throw RestoreError.archiveUnreadable("unzip exited \(proc.terminationStatus): \(tail)")
         }
+        #endif
     }
 
     /// Hash a local file in 1 MB chunks. We avoid loading the whole

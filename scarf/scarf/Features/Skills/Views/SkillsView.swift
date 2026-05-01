@@ -14,7 +14,11 @@ struct SkillsView: View {
     /// for the active server. Drives the v2.5 "What's New" pill at
     /// the top of the Skills list. Nil before first compute.
     @State private var snapshotDiff: SkillSnapshotDiff?
+    /// Sheet for v0.12 direct-URL skill install. Capability-gated so
+    /// the trigger button only appears on hosts that support it.
+    @State private var showInstallFromURLSheet = false
     @Environment(\.serverContext) private var serverContext
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
     @State private var currentTab: Tab = .installed
 
     init(context: ServerContext) {
@@ -42,7 +46,26 @@ struct SkillsView: View {
             ScarfPageHeader(
                 "Skills",
                 subtitle: "Pre-packaged prompt collections the agent can call into. \(viewModel.totalSkillCount) installed."
-            )
+            ) {
+                HStack(spacing: 6) {
+                    Button {
+                        Task { await viewModel.reloadSkills() }
+                    } label: {
+                        Label("Reload", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(ScarfGhostButton())
+                    .help("Re-scan ~/.hermes/skills/ and pick up edits without restarting Hermes")
+
+                    if capabilitiesStore?.capabilities.hasSkillURLInstall ?? false {
+                        Button {
+                            showInstallFromURLSheet = true
+                        } label: {
+                            Label("Install from URL…", systemImage: "link.badge.plus")
+                        }
+                        .buttonStyle(ScarfPrimaryButton())
+                    }
+                }
+            }
             modePicker
             // v2.5 "What's New" pill — only renders when the diff has
             // changes against a non-empty prior snapshot (first launch
@@ -91,6 +114,9 @@ struct SkillsView: View {
         }
         .task {
             recomputeSnapshotDiff()
+        }
+        .sheet(isPresented: $showInstallFromURLSheet) {
+            InstallFromURLSheet(viewModel: viewModel)
         }
     }
 
@@ -186,13 +212,45 @@ struct SkillsView: View {
             ForEach(viewModel.filteredCategories) { category in
                 Section(category.name) {
                     ForEach(category.skills) { skill in
-                        Label(skill.name, systemImage: "lightbulb")
+                        skillRow(skill)
                             .tag(skill.id)
                     }
                 }
             }
         }
         .listStyle(.sidebar)
+    }
+
+    /// Sidebar row with enabled/disabled visual state + pin badge.
+    /// Disabled skills render at .secondary opacity so the user can see
+    /// they exist but Hermes won't load them.
+    @ViewBuilder
+    private func skillRow(_ skill: HermesSkill) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "lightbulb")
+                .frame(width: 14)
+                .foregroundStyle(skill.enabled ? .primary : .secondary)
+            Text(skill.name)
+                .foregroundStyle(skill.enabled ? .primary : .secondary)
+                .strikethrough(!skill.enabled, color: .secondary)
+            Spacer(minLength: 0)
+            if skill.pinned {
+                Image(systemName: "pin.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(ScarfColor.accent)
+                    .help("Pinned by curator")
+            }
+            if !skill.enabled {
+                Text("OFF")
+                    .scarfStyle(.captionUppercase)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(ScarfColor.backgroundTertiary)
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+                    .foregroundStyle(ScarfColor.foregroundMuted)
+                    .help("Disabled in skills.disabled — Hermes won't load this one")
+            }
+        }
     }
 
     @ViewBuilder

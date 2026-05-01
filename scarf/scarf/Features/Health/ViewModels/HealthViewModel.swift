@@ -180,7 +180,7 @@ final class HealthViewModel {
             ("skills_hub", config.auxiliary.skillsHub.provider),
             ("approval", config.auxiliary.approval.provider),
             ("mcp", config.auxiliary.mcp.provider),
-            ("flush_memories", config.auxiliary.flushMemories.provider),
+            ("curator", config.auxiliary.curator.provider),
         ].filter { $0.1 == "nous" }.map(\.0)
         if !auxOnNous.isEmpty {
             checks.append(HealthCheck(

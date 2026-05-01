@@ -36,12 +36,33 @@ struct InstalledSkillsListView: View {
                         NavigationLink {
                             SkillDetailView(skill: skill, vm: vm)
                         } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(skill.name)
-                                    .font(.body)
-                                Text("\(skill.files.count) file\(skill.files.count == 1 ? "" : "s")")
-                                    .font(.caption)
-                                    .foregroundStyle(ScarfColor.foregroundMuted)
+                            HStack(spacing: 8) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(skill.name)
+                                        .font(.body)
+                                        .foregroundStyle(skill.enabled ? .primary : .secondary)
+                                        .strikethrough(!skill.enabled, color: .secondary)
+                                    Text("\(skill.files.count) file\(skill.files.count == 1 ? "" : "s")")
+                                        .font(.caption)
+                                        .foregroundStyle(ScarfColor.foregroundMuted)
+                                }
+                                Spacer(minLength: 0)
+                                if skill.pinned {
+                                    Image(systemName: "pin.fill")
+                                        .font(.caption2)
+                                        .foregroundStyle(ScarfColor.accent)
+                                        .accessibilityLabel("Pinned by curator")
+                                }
+                                if !skill.enabled {
+                                    Text("OFF")
+                                        .font(.caption2.weight(.semibold))
+                                        .padding(.horizontal, 4)
+                                        .padding(.vertical, 1)
+                                        .background(ScarfColor.backgroundTertiary)
+                                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                                        .foregroundStyle(ScarfColor.foregroundMuted)
+                                        .accessibilityLabel("Disabled — Hermes won't load this skill")
+                                }
                             }
                         }
                         .scarfGoCompactListRow()

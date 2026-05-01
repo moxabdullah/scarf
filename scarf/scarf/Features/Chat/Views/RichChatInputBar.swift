@@ -1,19 +1,50 @@
 import SwiftUI
 import ScarfCore
 import ScarfDesign
+import UniformTypeIdentifiers
+import os
+#if canImport(AppKit)
+import AppKit
+#endif
 
 struct RichChatInputBar: View {
-    let onSend: (String) -> Void
+    /// Send the user's text and any attached images. Empty `images`
+    /// preserves the v0.11 wire shape; non-empty images are forwarded
+    /// as ACP image content blocks (Hermes v0.12+; the composer hides
+    /// the attachment UI on older hosts).
+    let onSend: (String, [ChatImageAttachment]) -> Void
     let isEnabled: Bool
     var commands: [HermesSlashCommand] = []
     var showCompressButton: Bool = false
+
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
 
     @State private var text = ""
     @State private var showCompressSheet = false
     @State private var compressFocus = ""
     @State private var showMenu = false
     @State private var selectedIndex = 0
+    @State private var attachments: [ChatImageAttachment] = []
+    /// True while ImageEncoder is decoding/encoding pasted/dropped bytes.
+    /// Renders a small spinner in the preview strip so the user knows
+    /// their drop landed.
+    @State private var isEncodingAttachment = false
+    /// User-visible failure (decode failed, format unsupported). Auto-clears.
+    @State private var attachmentError: String?
     @FocusState private var isFocused: Bool
+
+    /// Hard cap matches what Hermes' vision aux model swallows comfortably
+    /// in one prompt. Going higher costs tokens without a quality gain.
+    private static let maxAttachments = 5
+
+    private static let logger = Logger(subsystem: "com.scarf", category: "ChatComposer")
+
+    /// `nil` until detection finishes — we hide the attachment UI in
+    /// that brief window (~50ms locally, longer over SSH) so we never
+    /// flash an attachment chip a v0.11 host couldn't honor.
+    private var supportsImagePrompts: Bool {
+        capabilitiesStore?.capabilities.hasACPImagePrompts ?? false
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -36,6 +67,10 @@ struct RichChatInputBar: View {
                 .padding(.top, 8)
             }
 
+            if !attachments.isEmpty || isEncodingAttachment || attachmentError != nil {
+                attachmentStrip
+            }
+
             HStack(alignment: .bottom, spacing: ScarfSpace.s2) {
                 if showCompressButton {
                     Button {
@@ -50,6 +85,10 @@ struct RichChatInputBar: View {
                     .buttonStyle(.plain)
                     .disabled(!isEnabled)
                     .help("Compress conversation (/compress)")
+                }
+
+                if supportsImagePrompts {
+                    attachmentButton
                 }
 
                 TextEditor(text: $text)
@@ -70,13 +109,34 @@ struct RichChatInputBar: View {
                     )
                     .overlay(alignment: .topLeading) {
                         if text.isEmpty {
-                            Text("Message Hermes…  /  for commands")
+                            Text(supportsImagePrompts
+                                 ? "Message Hermes…  /  for commands · drag images to attach"
+                                 : "Message Hermes…  /  for commands")
                                 .scarfStyle(.body)
                                 .foregroundStyle(ScarfColor.foregroundFaint)
                                 .padding(.horizontal, 14)
                                 .padding(.vertical, 10)
                                 .allowsHitTesting(false)
                         }
+                    }
+                    // Drag-drop image attachments. Receives both file URLs
+                    // (from Finder) and raw image bitmap data (from
+                    // screenshot tools that drop tiff/png directly).
+                    // Capability-gated so v0.11 hosts don't surface a
+                    // drop target that does nothing.
+                    .onDrop(
+                        of: supportsImagePrompts ? [.image, .fileURL] : [],
+                        isTargeted: nil
+                    ) { providers in
+                        guard supportsImagePrompts else { return false }
+                        ingestProviders(providers)
+                        return true
+                    }
+                    // Paste from screenshots / browser context menu.
+                    // Accepting `Data` keeps us off `NSImage` which would
+                    // require AppKit-typed paste. v0.12+ only.
+                    .onPasteCommand(of: pasteAcceptedTypes) { providers in
+                        ingestProviders(providers)
                     }
                     .onKeyPress(.upArrow, phases: .down) { _ in
                         guard showMenu, !filteredCommands.isEmpty else { return .ignored }
@@ -148,6 +208,96 @@ struct RichChatInputBar: View {
         }
     }
 
+    /// Horizontal preview strip for attached images. Each chip shows the
+    /// thumbnail (or a placeholder icon if we couldn't render one) plus
+    /// an X to remove the attachment.
+    @ViewBuilder
+    private var attachmentStrip: some View {
+        HStack(alignment: .center, spacing: ScarfSpace.s2) {
+            if isEncodingAttachment {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Encoding…")
+                    .scarfStyle(.caption)
+                    .foregroundStyle(ScarfColor.foregroundMuted)
+            }
+            ForEach(attachments) { attachment in
+                attachmentChip(attachment)
+            }
+            if let err = attachmentError {
+                Text(err)
+                    .scarfStyle(.caption)
+                    .foregroundStyle(ScarfColor.danger)
+            }
+            Spacer(minLength: 0)
+            if !attachments.isEmpty {
+                Text("\(attachments.count)/\(Self.maxAttachments)")
+                    .scarfStyle(.caption)
+                    .foregroundStyle(ScarfColor.foregroundFaint)
+            }
+        }
+        .padding(.horizontal, ScarfSpace.s3)
+        .padding(.top, ScarfSpace.s2)
+    }
+
+    @ViewBuilder
+    private func attachmentChip(_ attachment: ChatImageAttachment) -> some View {
+        let thumb = chipThumbnail(for: attachment)
+        HStack(spacing: 4) {
+            thumb
+                .frame(width: 32, height: 32)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+            Button {
+                attachments.removeAll { $0.id == attachment.id }
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(ScarfColor.foregroundMuted)
+            }
+            .buttonStyle(.plain)
+            .help(attachment.filename ?? "Image attachment")
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: ScarfRadius.md)
+                .fill(ScarfColor.backgroundTertiary)
+        )
+    }
+
+    /// Render the inline thumbnail for a chip. Falls back to a generic
+    /// photo icon when the encoder didn't produce a thumbnail (e.g. the
+    /// image was already small enough to skip the resize step).
+    @ViewBuilder
+    private func chipThumbnail(for attachment: ChatImageAttachment) -> some View {
+        if let thumb = attachment.thumbnailBase64,
+           let data = Data(base64Encoded: thumb),
+           let image = NSImage(data: data) {
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        } else {
+            Image(systemName: "photo")
+                .foregroundStyle(ScarfColor.foregroundMuted)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(ScarfColor.backgroundSecondary)
+        }
+    }
+
+    private var attachmentButton: some View {
+        Button {
+            presentImagePicker()
+        } label: {
+            Image(systemName: "paperclip")
+                .font(.system(size: 16))
+                .foregroundStyle(ScarfColor.foregroundMuted)
+                .padding(6)
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled || attachments.count >= Self.maxAttachments)
+        .help("Attach image (\(attachments.count)/\(Self.maxAttachments))")
+    }
+
     private var compressSheet: some View {
         VStack(alignment: .leading, spacing: ScarfSpace.s3) {
             Text("Compress Conversation")
@@ -164,7 +314,7 @@ struct RichChatInputBar: View {
                 Button("Compress") {
                     let focus = compressFocus.trimmingCharacters(in: .whitespacesAndNewlines)
                     let command = focus.isEmpty ? "/compress" : "/compress \(focus)"
-                    onSend(command)
+                    onSend(command, [])
                     showCompressSheet = false
                 }
                 .buttonStyle(ScarfPrimaryButton())
@@ -176,7 +326,18 @@ struct RichChatInputBar: View {
     }
 
     private var canSend: Bool {
-        isEnabled && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard isEnabled else { return false }
+        // Allow sending image-only messages once at least one attachment
+        // exists — vision models accept "describe this" with no text.
+        if !attachments.isEmpty { return true }
+        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// MIME types accepted for paste. Restricting to image-bearing
+    /// providers stops macOS from offering a paste menu when the user
+    /// has plain text on the clipboard.
+    private var pasteAcceptedTypes: [UTType] {
+        supportsImagePrompts ? [.image, .png, .jpeg, .tiff, .heic] : []
     }
 
     /// Show the slash menu only while the user is typing the command token:
@@ -224,11 +385,117 @@ struct RichChatInputBar: View {
 
     private func send() {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, isEnabled else { return }
-        onSend(trimmed)
+        guard canSend else { return }
+        onSend(trimmed, attachments)
         text = ""
+        attachments.removeAll()
         showMenu = false
         selectedIndex = 0
+    }
+
+    // MARK: - Attachment ingestion
+
+    /// Pull image bytes out of a set of `NSItemProvider`s (drag/drop or
+    /// paste). Each provider may carry a file URL OR raw image data —
+    /// we try both. Caps at `maxAttachments`; surplus drops are
+    /// dropped silently with a status message.
+    private func ingestProviders(_ providers: [NSItemProvider]) {
+        let remainingSlots = Self.maxAttachments - attachments.count
+        guard remainingSlots > 0 else {
+            attachmentError = "Limit of \(Self.maxAttachments) images reached"
+            scheduleAttachmentErrorClear()
+            return
+        }
+        let toIngest = providers.prefix(remainingSlots)
+        for provider in toIngest {
+            ingestProvider(provider)
+        }
+    }
+
+    private func ingestProvider(_ provider: NSItemProvider) {
+        // Prefer file URL when available — gives us the original filename
+        // for the attachment chip's tooltip.
+        if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            isEncodingAttachment = true
+            provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url, let data = try? Data(contentsOf: url) else {
+                    Task { @MainActor in
+                        isEncodingAttachment = false
+                        attachmentError = "Couldn't read dropped file"
+                        scheduleAttachmentErrorClear()
+                    }
+                    return
+                }
+                encode(data: data, filename: url.lastPathComponent)
+            }
+            return
+        }
+        for typeId in [UTType.image.identifier, UTType.png.identifier, UTType.jpeg.identifier, UTType.tiff.identifier, UTType.heic.identifier] {
+            if provider.hasItemConformingToTypeIdentifier(typeId) {
+                isEncodingAttachment = true
+                provider.loadDataRepresentation(forTypeIdentifier: typeId) { data, _ in
+                    guard let data else {
+                        Task { @MainActor in
+                            isEncodingAttachment = false
+                            attachmentError = "Couldn't decode pasted image"
+                            scheduleAttachmentErrorClear()
+                        }
+                        return
+                    }
+                    encode(data: data, filename: nil)
+                }
+                return
+            }
+        }
+    }
+
+    private func encode(data: Data, filename: String?) {
+        Task.detached(priority: .userInitiated) {
+            do {
+                let attachment = try ImageEncoder().encode(rawBytes: data, sourceFilename: filename)
+                await MainActor.run {
+                    isEncodingAttachment = false
+                    attachments.append(attachment)
+                }
+            } catch {
+                await MainActor.run {
+                    isEncodingAttachment = false
+                    attachmentError = (error as? LocalizedError)?.errorDescription ?? "Couldn't encode image"
+                    Self.logger.warning("ImageEncoder failed: \(error.localizedDescription, privacy: .public)")
+                    scheduleAttachmentErrorClear()
+                }
+            }
+        }
+    }
+
+    private func scheduleAttachmentErrorClear() {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            attachmentError = nil
+        }
+    }
+
+    private func presentImagePicker() {
+        #if canImport(AppKit)
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.image, .png, .jpeg, .tiff, .heic]
+        panel.message = "Choose images to attach"
+        panel.prompt = "Attach"
+        let response = panel.runModal()
+        guard response == .OK else { return }
+        let urls = Array(panel.urls.prefix(Self.maxAttachments - attachments.count))
+        guard !urls.isEmpty else { return }
+        isEncodingAttachment = true
+        Task.detached(priority: .userInitiated) {
+            for url in urls {
+                guard let data = try? Data(contentsOf: url) else { continue }
+                encode(data: data, filename: url.lastPathComponent)
+            }
+        }
+        #endif
     }
 }
 

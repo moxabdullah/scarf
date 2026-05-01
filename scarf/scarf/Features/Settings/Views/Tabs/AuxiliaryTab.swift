@@ -9,24 +9,45 @@ import ScarfCore
 /// (subscription-routed) and `auto` (inherit main provider) — Hermes derives
 /// the gateway routing from that single field; there is no separate
 /// `use_gateway` key to write.
+///
+/// v0.12 dropped the `flush_memories` aux task on the server side and
+/// added `curator` (the autonomous skill-maintenance review fork). The
+/// Curator row only appears when `HermesCapabilities.hasCuratorAux` is
+/// set; the Flush Memories row only appears when
+/// `HermesCapabilities.hasFlushMemoriesAux` is set (inverse semantics —
+/// `true` only on pre-v0.12 hosts where the task still exists). v0.11
+/// users keep their edit surface; v0.12 users never see it.
 struct AuxiliaryTab: View {
     @Bindable var viewModel: SettingsViewModel
 
     @Environment(\.serverContext) private var serverContext
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
     @State private var subscription: NousSubscriptionState = .absent
     @State private var showNousSignIn: Bool = false
 
     // Keyed by the config path name — matches `auxiliary.<task>.*` in config.yaml.
-    private let tasks: [(key: String, title: LocalizedStringKey, icon: String)] = [
+    // Static base list; the v0.12-only `curator` row is appended at render
+    // time when the target Hermes supports it.
+    private let baseTasks: [(key: String, title: LocalizedStringKey, icon: String)] = [
         ("vision", "Vision", "eye"),
         ("web_extract", "Web Extract", "doc.richtext"),
         ("compression", "Compression", "arrow.down.right.and.arrow.up.left.circle"),
         ("session_search", "Session Search", "magnifyingglass"),
         ("skills_hub", "Skills Hub", "books.vertical"),
         ("approval", "Approval", "checkmark.seal"),
-        ("mcp", "MCP", "puzzlepiece"),
-        ("flush_memories", "Flush Memories", "trash.slash")
+        ("mcp", "MCP", "puzzlepiece")
     ]
+
+    private var tasks: [(key: String, title: LocalizedStringKey, icon: String)] {
+        var t = baseTasks
+        if capabilitiesStore?.capabilities.hasFlushMemoriesAux ?? false {
+            t.append(("flush_memories", "Flush Memories", "trash.slash"))
+        }
+        if capabilitiesStore?.capabilities.hasCuratorAux ?? false {
+            t.append(("curator", "Curator", "sparkles"))
+        }
+        return t
+    }
 
     var body: some View {
         Text("Auxiliary tasks use separate, typically cheaper models. Leave Provider as `auto` to inherit the main provider.")
@@ -95,6 +116,7 @@ struct AuxiliaryTab: View {
         case "approval": return viewModel.config.auxiliary.approval
         case "mcp": return viewModel.config.auxiliary.mcp
         case "flush_memories": return viewModel.config.auxiliary.flushMemories
+        case "curator": return viewModel.config.auxiliary.curator
         default: return .empty
         }
     }

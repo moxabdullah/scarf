@@ -70,17 +70,107 @@ public final class SkillsViewModel {
     /// Awaitable scan. iOS's `.task { await vm.load() }` and the
     /// ScarfCore unit tests use this directly; Mac call sites wrap in
     /// `Task { await ... }` from `onAppear`.
+    ///
+    /// Pinned-name set is auto-fetched from the curator state file on
+    /// v0.12+ hosts; callers can override by passing an explicit set
+    /// (the Curator screen does this when it has a fresher snapshot in
+    /// hand).
     @MainActor
-    public func load() async {
+    public func load(pinnedNames: Set<String>? = nil) async {
         isLoading = true
         lastError = nil
         let ctx = context
         let xport = transport
+        let pins = pinnedNames
         let cats: [HermesSkillCategory] = await Task.detached {
-            SkillsScanner.scan(context: ctx, transport: xport)
+            let disabled = Self.readDisabledSkillNames(context: ctx)
+            let pinned = pins ?? Self.readPinnedSkillNames(context: ctx)
+            return SkillsScanner.scan(
+                context: ctx,
+                transport: xport,
+                disabledNames: disabled,
+                pinnedNames: pinned
+            )
         }.value
         categories = cats
         isLoading = false
+    }
+
+    /// Read the curator's pinned-skills list from
+    /// `~/.hermes/skills/.curator_state` (JSON despite the lack of an
+    /// extension). Pre-v0.12 hosts won't have this file yet — return
+    /// an empty set so the pin badge stays hidden.
+    nonisolated static func readPinnedSkillNames(context: ServerContext) -> Set<String> {
+        guard let data = context.readData(context.paths.curatorStateFile),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return [] }
+        // Curator stores pins in either `pinned: [name, ...]` or
+        // `pinned_skills: [name, ...]` depending on Hermes version —
+        // accept both shapes so we don't break on a future rename.
+        let raw = (obj["pinned"] as? [String]) ?? (obj["pinned_skills"] as? [String]) ?? []
+        return Set(raw)
+    }
+
+    /// Read the `skills.disabled:` array from `~/.hermes/config.yaml`.
+    /// Hermes v0.12 stores skill disable state there (one global list
+    /// + optional `skills.platform_disabled` overrides). Returns the
+    /// global list only — Scarf doesn't surface platform overrides
+    /// today. Empty set on missing file / parse failure.
+    nonisolated static func readDisabledSkillNames(context: ServerContext) -> Set<String> {
+        guard let yaml = context.readText(context.paths.configYAML) else { return [] }
+        // Lightweight match: find `skills:` block, then `disabled:` array
+        // inside it. The full YAML parser is overkill for one nested array.
+        var inSkillsBlock = false
+        var disabledIndent: Int?
+        var collected: [String] = []
+        for raw in yaml.components(separatedBy: "\n") {
+            // Top-level `skills:` declaration.
+            if raw.hasPrefix("skills:") {
+                inSkillsBlock = true
+                continue
+            }
+            if inSkillsBlock {
+                // A new top-level block ends the `skills:` scope.
+                if !raw.hasPrefix(" ") && !raw.hasPrefix("\t") && raw.contains(":") {
+                    break
+                }
+                let trimmed = raw.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("disabled:") {
+                    // Inline form `disabled: [a, b, c]`
+                    let after = trimmed.dropFirst("disabled:".count).trimmingCharacters(in: .whitespaces)
+                    if after.hasPrefix("[") && after.hasSuffix("]") {
+                        let body = after.dropFirst().dropLast()
+                        let parts = body.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
+                        for p in parts where !p.isEmpty {
+                            collected.append(p.trimmingCharacters(in: CharacterSet(charactersIn: "\"' ")))
+                        }
+                        return Set(collected)
+                    }
+                    // Block form: `disabled:` followed by `  - name`
+                    disabledIndent = raw.prefix { $0 == " " || $0 == "\t" }.count
+                    continue
+                }
+                if let baseIndent = disabledIndent {
+                    let leading = raw.prefix { $0 == " " || $0 == "\t" }.count
+                    if !trimmed.isEmpty {
+                        // PyYAML's default `yaml.dump` emits list items at the
+                        // same indent as the parent key, so `- foo` lines for
+                        // `disabled:` arrive at `leading == baseIndent`. Only
+                        // a strictly shallower indent — or a same-indent line
+                        // that isn't a list item (sibling key) — ends the block.
+                        if leading < baseIndent { break }
+                        if leading == baseIndent && !trimmed.hasPrefix("- ") { break }
+                    }
+                    if trimmed.hasPrefix("- ") {
+                        let name = trimmed.dropFirst(2).trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
+                        if !name.isEmpty {
+                            collected.append(String(name))
+                        }
+                    }
+                }
+            }
+        }
+        return Set(collected)
     }
 
     public func selectSkill(_ skill: HermesSkill) {
@@ -197,6 +287,68 @@ public final class SkillsViewModel {
                 timeout: 120
             )
             await self?.finishInstall(identifier: identifier, exitCode: result.exitCode)
+        }
+    }
+
+    /// v0.12: install a skill from a direct HTTPS URL pointing at a
+    /// SKILL.md (or a tarball). Hermes pulls + installs without going
+    /// through the registry indirection. The Mac UI gates this on
+    /// `HermesCapabilities.hasSkillURLInstall` so a v0.11 host doesn't
+    /// see a button that errors out with "unrecognized argument".
+    ///
+    /// `categoryOverride` and `nameOverride` map to `--category` /
+    /// `--name` flags Hermes ships for direct-URL installs (the URL's
+    /// SKILL.md may not declare those, especially for one-off scripts).
+    public func installFromURL(
+        _ url: String,
+        categoryOverride: String? = nil,
+        nameOverride: String? = nil
+    ) {
+        isHubLoading = true
+        hubMessage = "Installing from URL…"
+        let bin = context.paths.hermesBinary
+        let xport = transport
+        Task.detached { [weak self] in
+            var args = ["skills", "install", url, "--yes"]
+            if let category = categoryOverride, !category.isEmpty {
+                args += ["--category", category]
+            }
+            if let name = nameOverride, !name.isEmpty {
+                args += ["--name", name]
+            }
+            let result = Self.runHermes(
+                executable: bin,
+                args: args,
+                transport: xport,
+                timeout: 180
+            )
+            await self?.finishInstall(identifier: url, exitCode: result.exitCode)
+        }
+    }
+
+    /// v0.12: trigger a hot reload of `~/.hermes/skills/` so the agent
+    /// picks up file edits without a session restart. Hermes ships
+    /// `/reload-skills` as a slash command in chat AND `hermes skills
+    /// audit` as a CLI form. We use `audit` here so the reload works
+    /// even when no chat session is active.
+    public func reloadSkills() async {
+        isHubLoading = true
+        let bin = context.paths.hermesBinary
+        let xport = transport
+        let result = await Task.detached {
+            Self.runHermes(
+                executable: bin,
+                args: ["skills", "audit"],
+                transport: xport,
+                timeout: 30
+            )
+        }.value
+        hubMessage = result.exitCode == 0 ? "Skills reloaded" : "Reload failed"
+        isHubLoading = false
+        await load()
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            self?.hubMessage = nil
         }
     }
 

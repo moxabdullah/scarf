@@ -37,6 +37,16 @@ public struct HermesSkill: Identifiable, Sendable {
     /// Python packages). Used by `SkillPrereqService` to know what to
     /// probe; nil when the field is absent.
     public let dependencies: [String]?
+    /// `false` when the skill name appears in `skills.disabled` in
+    /// `~/.hermes/config.yaml`. Hermes v0.12 stores disable state in
+    /// the config rather than per-skill markers; this is read-only
+    /// from Scarf's side until the toggle UI lands. Defaults to `true`.
+    public let enabled: Bool
+    /// `true` when the skill is pinned via `hermes curator pin <name>`.
+    /// Pinned skills are protected from auto-archive / consolidation.
+    /// Read from `CuratorViewModel.status.pinnedNames`; defaults to
+    /// `false` when curator state is unavailable.
+    public let pinned: Bool
 
     public init(
         id: String,
@@ -47,7 +57,9 @@ public struct HermesSkill: Identifiable, Sendable {
         requiredConfig: [String],
         allowedTools: [String]? = nil,
         relatedSkills: [String]? = nil,
-        dependencies: [String]? = nil
+        dependencies: [String]? = nil,
+        enabled: Bool = true,
+        pinned: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -58,5 +70,7 @@ public struct HermesSkill: Identifiable, Sendable {
         self.allowedTools = allowedTools
         self.relatedSkills = relatedSkills
         self.dependencies = dependencies
+        self.enabled = enabled
+        self.pinned = pinned
     }
 }

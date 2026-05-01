@@ -425,15 +425,17 @@ public struct ModelCatalogService: Sendable {
 
     // MARK: - Hermes overlay providers
 
-    /// The six providers Hermes surfaces via `hermes model` that have no
+    /// The 11 providers Hermes surfaces via `hermes model` that have no
     /// entry in `models_dev_cache.json` (models.dev doesn't mirror them).
     /// Mirrors the overlay-only subset of `HERMES_OVERLAYS` in
-    /// `hermes-agent/hermes_cli/providers.py`. The other ~19 overlay entries
+    /// `hermes-agent/hermes_cli/providers.py`. The other overlay entries
     /// already ship in the cache and only add augmentation (base-URL
     /// override, extra env vars) that Scarf doesn't currently display.
     ///
-    /// Keep this in sync with the Python side on Hermes version bumps.
-    static let overlayOnlyProviders: [String: HermesProviderOverlay] = [
+    /// Keep this in sync with the Python side on Hermes version bumps —
+    /// see `ToolGatewayTests.v012OverlayProvidersCarryCorrectAuthTypes`
+    /// for the auth-type lock-in.
+    public static let overlayOnlyProviders: [String: HermesProviderOverlay] = [
         "nous": HermesProviderOverlay(
             displayName: "Nous Portal",
             baseURL: "https://inference-api.nousresearch.com/v1",
@@ -472,6 +474,53 @@ public struct ModelCatalogService: Sendable {
         "arcee": HermesProviderOverlay(
             displayName: "Arcee",
             baseURL: "https://api.arcee.ai/api/v1",
+            authType: .apiKey,
+            subscriptionGated: false,
+            docURL: nil
+        ),
+        // -- v0.12 additions ---------------------------------------------
+        // Hermes v2026.4.30 added five overlay-only providers that
+        // models.dev doesn't mirror. Provider IDs match HERMES_OVERLAYS
+        // verbatim — drift here means the picker can't reach them.
+        "gmi": HermesProviderOverlay(
+            displayName: "GMI Cloud",
+            baseURL: "https://api.gmi-serving.com/v1",
+            authType: .apiKey,
+            subscriptionGated: false,
+            docURL: nil
+        ),
+        "azure-foundry": HermesProviderOverlay(
+            displayName: "Azure AI Foundry",
+            // Base URL is per-tenant — Hermes resolves it from the
+            // AZURE_FOUNDRY_BASE_URL env var at runtime. Leave nil so the
+            // settings UI shows "Tenant URL — set via env" instead of a
+            // misleading default.
+            baseURL: nil,
+            authType: .apiKey,
+            subscriptionGated: false,
+            docURL: nil
+        ),
+        "lmstudio": HermesProviderOverlay(
+            displayName: "LM Studio",
+            // v0.12 promotes LM Studio from custom-endpoint alias to a
+            // first-class provider. 1234 is the LM Studio default port;
+            // users with a non-default port set LM_BASE_URL.
+            baseURL: "http://127.0.0.1:1234/v1",
+            authType: .apiKey,
+            subscriptionGated: false,
+            docURL: nil
+        ),
+        "minimax-oauth": HermesProviderOverlay(
+            displayName: "MiniMax (OAuth)",
+            baseURL: "https://api.minimax.io/anthropic",
+            authType: .oauthExternal,
+            subscriptionGated: false,
+            docURL: nil
+        ),
+        "tencent-tokenhub": HermesProviderOverlay(
+            displayName: "Tencent TokenHub",
+            // Resolved from TOKENHUB_BASE_URL at runtime.
+            baseURL: nil,
             authType: .apiKey,
             subscriptionGated: false,
             docURL: nil

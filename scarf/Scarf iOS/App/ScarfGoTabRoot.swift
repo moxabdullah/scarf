@@ -30,11 +30,42 @@ struct ScarfGoTabRoot: View {
     let onSoftDisconnect: @MainActor () async -> Void
     let onForget: @MainActor () async -> Void
 
+    /// Stable per-tab context UUID — used for the System tab's Curator
+    /// row so its CuratorViewModel reuses the cached SSH connection
+    /// keyed by this id rather than building a fresh one. Same pattern
+    /// as `sharedContextID` on ChatView.
+    static let systemTabContextID: ServerID = ServerID(
+        uuidString: "00000000-0000-0000-0000-0000000000A2"
+    )!
+
     /// One coordinator per server-connected session. Cross-tab
     /// signalling (Dashboard row → Chat tab resume, Project Detail
     /// → in-project chat handoff, notification deep-link → Chat) flows
     /// through here.
     @State private var coordinator = ScarfGoCoordinator()
+
+    /// Hermes version + capability flags for this remote. Drives the
+    /// iOS version banner (v0.11 hosts get a yellow "update for new
+    /// features" banner) and capability-gated affordances like ACP
+    /// image attachments. Constructed once per server connection so
+    /// the detection runs over the active SSH transport.
+    @State private var capabilities: HermesCapabilitiesStore
+
+    init(
+        serverID: ServerID,
+        config: IOSServerConfig,
+        key: SSHKeyBundle,
+        onSoftDisconnect: @escaping @MainActor () async -> Void,
+        onForget: @escaping @MainActor () async -> Void
+    ) {
+        self.serverID = serverID
+        self.config = config
+        self.key = key
+        self.onSoftDisconnect = onSoftDisconnect
+        self.onForget = onForget
+        let ctx = config.toServerContext(id: serverID)
+        _capabilities = State(initialValue: HermesCapabilitiesStore(context: ctx))
+    }
 
     /// SwiftUI's `.onChange(of: ScenePhase)` modifier on a non-active
     /// tab doesn't fire while the tab is unmounted — the coordinator
@@ -118,6 +149,8 @@ struct ScarfGoTabRoot: View {
         .tabViewStyle(.sidebarAdaptable)
         .environment(\.serverContext, ctx)
         .environment(\.scarfGoCoordinator, coordinator)
+        .environment(capabilities)
+        .hermesCapabilities(capabilities)
         .onAppear {
             // Give the notification router a handle to this session's
             // coordinator so notification-taps can route across tabs.
@@ -146,6 +179,8 @@ private struct SystemTab: View {
     let config: IOSServerConfig
     let onSoftDisconnect: @MainActor () async -> Void
     let onForget: @MainActor () async -> Void
+
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
 
     @State private var showForgetConfirmation = false
     @State private var isForgetting = false
@@ -181,6 +216,15 @@ private struct SystemTab: View {
                 }
                 .scarfGoCompactListRow()
                 .listRowBackground(ScarfColor.backgroundSecondary)
+                if capabilitiesStore?.capabilities.hasCurator ?? false {
+                    NavigationLink {
+                        CuratorView(context: config.toServerContext(id: ScarfGoTabRoot.systemTabContextID))
+                    } label: {
+                        Label("Curator", systemImage: "sparkles")
+                    }
+                    .scarfGoCompactListRow()
+                    .listRowBackground(ScarfColor.backgroundSecondary)
+                }
                 NavigationLink {
                     CronListView(config: config)
                 } label: {
@@ -192,6 +236,36 @@ private struct SystemTab: View {
                     SettingsView(config: config)
                 } label: {
                     Label("Settings", systemImage: "gearshape.fill")
+                }
+                .scarfGoCompactListRow()
+                .listRowBackground(ScarfColor.backgroundSecondary)
+            }
+
+            // v2.6: read-only mobile views over CLI-driven Hermes
+            // surfaces. Mac owns the create/edit paths; phones get a
+            // monitoring window into what the remote agent is honoring.
+            // None of these are capability-gated — the underlying
+            // `hermes plugins/profile/webhook list` verbs exist on
+            // both v0.11 and v0.12, so the read views work on either.
+            Section("Inspect") {
+                NavigationLink {
+                    WebhooksView(config: config)
+                } label: {
+                    Label("Webhooks", systemImage: "arrow.up.right.square")
+                }
+                .scarfGoCompactListRow()
+                .listRowBackground(ScarfColor.backgroundSecondary)
+                NavigationLink {
+                    PluginsView(config: config)
+                } label: {
+                    Label("Plugins", systemImage: "app.badge.checkmark")
+                }
+                .scarfGoCompactListRow()
+                .listRowBackground(ScarfColor.backgroundSecondary)
+                NavigationLink {
+                    ProfilesView(config: config)
+                } label: {
+                    Label("Profiles", systemImage: "person.2.crop.square.stack")
                 }
                 .scarfGoCompactListRow()
                 .listRowBackground(ScarfColor.backgroundSecondary)

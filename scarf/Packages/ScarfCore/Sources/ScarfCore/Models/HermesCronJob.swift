@@ -19,6 +19,15 @@ public struct HermesCronJob: Identifiable, Sendable, Codable {
     public nonisolated let timeoutType: String?
     public nonisolated let timeoutSeconds: Int?
     public nonisolated let silent: Bool?
+    /// Hermes v0.12+ — the directory the job runs from. Hermes injects
+    /// AGENTS.md / CLAUDE.md / .cursorrules from this dir and uses it
+    /// as cwd for terminal/file/code_exec tools. `nil` preserves the
+    /// pre-v0.12 behaviour (no project context files).
+    public nonisolated let workdir: String?
+    /// Hermes v0.12+ — chain another cron job's last output into this
+    /// job's prompt. YAML-only field today (no `--context-from` CLI
+    /// flag yet) — Scarf displays it but doesn't write it.
+    public nonisolated let contextFrom: [String]?
 
     public enum CodingKeys: String, CodingKey {
         case id, name, prompt, skills, model, schedule, enabled, state, deliver, silent
@@ -30,6 +39,8 @@ public struct HermesCronJob: Identifiable, Sendable, Codable {
         case lastDeliveryError = "last_delivery_error"
         case timeoutType = "timeout_type"
         case timeoutSeconds = "timeout_seconds"
+        case workdir
+        case contextFrom = "context_from"
     }
 
     /// Memberwise init. Swift doesn't synthesize one for us because
@@ -53,7 +64,9 @@ public struct HermesCronJob: Identifiable, Sendable, Codable {
         lastDeliveryError: String? = nil,
         timeoutType: String? = nil,
         timeoutSeconds: Int? = nil,
-        silent: Bool? = nil
+        silent: Bool? = nil,
+        workdir: String? = nil,
+        contextFrom: [String]? = nil
     ) {
         self.id = id
         self.name = name
@@ -73,6 +86,8 @@ public struct HermesCronJob: Identifiable, Sendable, Codable {
         self.timeoutType = timeoutType
         self.timeoutSeconds = timeoutSeconds
         self.silent = silent
+        self.workdir = workdir
+        self.contextFrom = contextFrom
     }
 
     public nonisolated init(from decoder: any Decoder) throws {
@@ -95,6 +110,8 @@ public struct HermesCronJob: Identifiable, Sendable, Codable {
         self.timeoutType       = try c.decodeIfPresent(String.self, forKey: .timeoutType)
         self.timeoutSeconds    = try c.decodeIfPresent(Int.self, forKey: .timeoutSeconds)
         self.silent            = try c.decodeIfPresent(Bool.self, forKey: .silent)
+        self.workdir           = try c.decodeIfPresent(String.self, forKey: .workdir)
+        self.contextFrom       = try c.decodeIfPresent([String].self, forKey: .contextFrom)
     }
 
     public nonisolated func encode(to encoder: any Encoder) throws {
@@ -117,6 +134,8 @@ public struct HermesCronJob: Identifiable, Sendable, Codable {
         try c.encodeIfPresent(timeoutType, forKey: .timeoutType)
         try c.encodeIfPresent(timeoutSeconds, forKey: .timeoutSeconds)
         try c.encodeIfPresent(silent, forKey: .silent)
+        try c.encodeIfPresent(workdir, forKey: .workdir)
+        try c.encodeIfPresent(contextFrom, forKey: .contextFrom)
     }
 
     public nonisolated var stateIcon: String {

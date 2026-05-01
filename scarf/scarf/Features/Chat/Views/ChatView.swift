@@ -396,7 +396,7 @@ struct ChatView: View {
             if viewModel.hermesBinaryExists {
                 RichChatView(
                     richChat: viewModel.richChatViewModel,
-                    onSend: { viewModel.sendText($0) },
+                    onSend: { text, images in viewModel.sendText(text, images: images) },
                     isEnabled: viewModel.hasActiveProcess || viewModel.hermesBinaryExists
                 )
             } else {

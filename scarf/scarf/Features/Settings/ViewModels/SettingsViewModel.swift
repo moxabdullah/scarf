@@ -21,9 +21,15 @@ final class SettingsViewModel {
     var hermesRunning = false
     var rawConfigYAML = ""
     var personalities: [String] = []
-    var terminalBackends = ["local", "docker", "singularity", "modal", "daytona", "ssh"]
+    // v0.12: terminal.backend gained `vercel` (Vercel Sandbox); tts.provider
+    // gained `piper` (native local TTS via the Piper engine). These show up
+    // unconditionally — Hermes silently ignores unknown values, so a v0.11
+    // host that picks "vercel" simply falls back to local. We don't gate
+    // either on `HermesCapabilities` because the cost of seeing an option
+    // that no-ops on older hosts is low compared to gating overhead.
+    var terminalBackends = ["local", "docker", "singularity", "modal", "daytona", "ssh", "vercel"]
     var browserBackends = ["browseruse", "firecrawl", "local"]
-    var ttsProviders = ["edge", "elevenlabs", "openai", "minimax", "mistral", "neutts"]
+    var ttsProviders = ["edge", "elevenlabs", "openai", "minimax", "mistral", "neutts", "piper"]
     var sttProviders = ["local", "groq", "openai", "mistral"]
     var memoryProviders = ["", "honcho", "openviking", "mem0", "hindsight", "holographic", "retaindb", "byterover", "supermemory"]
     var saveMessage: String?

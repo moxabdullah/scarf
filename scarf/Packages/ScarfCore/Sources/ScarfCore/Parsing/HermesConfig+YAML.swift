@@ -122,7 +122,8 @@ public extension HermesConfig {
             skillsHub: aux("skills_hub"),
             approval: aux("approval"),
             mcp: aux("mcp"),
-            flushMemories: aux("flush_memories")
+            flushMemories: aux("flush_memories"),
+            curator: aux("curator")
         )
 
         let security = SecuritySettings(
@@ -280,7 +281,10 @@ public extension HermesConfig {
             matrix: matrix,
             mattermost: mattermost,
             whatsapp: whatsapp,
-            homeAssistant: homeAssistant
+            homeAssistant: homeAssistant,
+            cacheTTL: str("prompt_caching.cache_ttl", default: "5m"),
+            redactionEnabled: bool("redaction.enabled", default: false),
+            runtimeMetadataFooter: bool("agent.runtime_metadata_footer", default: false)
         )
     }
 }

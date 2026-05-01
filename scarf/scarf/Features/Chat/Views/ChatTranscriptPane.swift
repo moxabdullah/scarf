@@ -9,7 +9,7 @@ import ScarfDesign
 struct ChatTranscriptPane: View {
     @Bindable var richChat: RichChatViewModel
     @Bindable var chatViewModel: ChatViewModel
-    var onSend: (String) -> Void
+    var onSend: (String, [ChatImageAttachment]) -> Void
     var isEnabled: Bool
 
     var body: some View {

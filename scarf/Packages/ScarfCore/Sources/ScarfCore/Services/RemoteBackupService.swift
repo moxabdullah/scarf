@@ -496,7 +496,15 @@ public final class RemoteBackupService: @unchecked Sendable {
     /// macOS ships `zip` at this fixed path so we don't need a PATH
     /// search. `-r` recurse, `-q` quiet, `-X` strip extended attrs
     /// for reproducibility.
+    ///
+    /// Mac-only: iOS doesn't ship `/usr/bin/zip` and Foundation's `Process`
+    /// is unavailable in the iOS SDK. The whole backup flow is a Mac-side
+    /// operation; the iOS stub throws so any accidental call surfaces a
+    /// clear message instead of an opaque link error.
     private static func zipDirectory(workDir: URL, into archive: URL) throws {
+        #if os(iOS)
+        throw BackupError.zipFailed("Backup zip is not supported on iOS — run the backup from the Mac app.")
+        #else
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
         proc.currentDirectoryURL = workDir
@@ -515,6 +523,7 @@ public final class RemoteBackupService: @unchecked Sendable {
                 .flatMap { String(data: $0 ?? Data(), encoding: .utf8) } ?? ""
             throw BackupError.zipFailed("zip exited \(proc.terminationStatus): \(tail)")
         }
+        #endif
     }
 }
 

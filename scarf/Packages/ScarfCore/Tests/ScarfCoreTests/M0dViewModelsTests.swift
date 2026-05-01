@@ -37,8 +37,8 @@ import Foundation
         let b: ConnectionStatusViewModel.Status = .connected
         #expect(a == b)
 
-        let c: ConnectionStatusViewModel.Status = .degraded(reason: "x")
-        let d: ConnectionStatusViewModel.Status = .degraded(reason: "x")
+        let c: ConnectionStatusViewModel.Status = .degraded(reason: "x", hint: "y", cause: .unknown)
+        let d: ConnectionStatusViewModel.Status = .degraded(reason: "x", hint: "y", cause: .unknown)
         #expect(c == d)
 
         let e: ConnectionStatusViewModel.Status = .idle
