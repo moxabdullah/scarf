@@ -448,14 +448,15 @@ struct ChatView: View {
     }
 
     private var composer: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: ScarfSpace.s2) {
             if !controller.attachments.isEmpty || isEncodingAttachment || attachmentError != nil {
                 attachmentStrip
             }
             composerRow
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, ScarfSpace.s3)
+        .padding(.top, ScarfSpace.s2)
+        .padding(.bottom, ScarfSpace.s2)
         .background(.regularMaterial)
         #if canImport(PhotosUI)
         .photosPicker(
@@ -536,18 +537,23 @@ struct ChatView: View {
     }
 
     private var composerRow: some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        HStack(alignment: .bottom, spacing: ScarfSpace.s2) {
             if supportsImagePrompts {
                 Button {
                     showPhotoPicker = true
                 } label: {
                     Image(systemName: "paperclip")
-                        .font(.system(size: 22))
-                        .foregroundStyle(.secondary)
-                        .padding(.bottom, 4)
+                        .font(.system(size: 20, weight: .regular))
+                        .foregroundStyle(
+                            attachDisabled
+                                ? ScarfColor.foregroundFaint
+                                : ScarfColor.foregroundMuted
+                        )
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(controller.state != .ready || controller.attachments.count >= Self.maxAttachments)
+                .disabled(attachDisabled)
                 .accessibilityLabel("Attach image")
             }
             TextField(
@@ -555,8 +561,19 @@ struct ChatView: View {
                 text: $controller.draft,
                 axis: .vertical
             )
-            .textFieldStyle(.roundedBorder)
+            .textFieldStyle(.plain)
             .lineLimit(1...5)
+            .padding(.horizontal, ScarfSpace.s3)
+            .padding(.vertical, ScarfSpace.s2)
+            .frame(minHeight: 44)
+            .background(
+                RoundedRectangle(cornerRadius: ScarfRadius.xl, style: .continuous)
+                    .fill(ScarfColor.backgroundSecondary)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: ScarfRadius.xl, style: .continuous)
+                    .strokeBorder(ScarfColor.borderStrong, lineWidth: 1)
+            )
             .disabled(controller.state != .ready)
             .submitLabel(.send)
             .focused($composerFocused)
@@ -592,13 +609,32 @@ struct ChatView: View {
                 }
             }
 
+            // Big circular send button. Filled with the brand accent when
+            // ready, swapped to a flat gray when disabled — opacity dims
+            // alone read as "not quite tappable" (issue #69), the explicit
+            // color swap makes the state unambiguous in both light and
+            // dark mode.
             Button {
                 Task { await controller.send() }
             } label: {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 28))
+                ZStack {
+                    Circle()
+                        .fill(canSendComposer
+                              ? ScarfColor.accent
+                              : ScarfColor.backgroundTertiary)
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(canSendComposer
+                                         ? ScarfColor.onAccent
+                                         : ScarfColor.foregroundFaint)
+                }
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
+                .animation(ScarfAnimation.fast, value: canSendComposer)
             }
+            .buttonStyle(.plain)
             .disabled(!canSendComposer)
+            .accessibilityLabel("Send message")
         }
     }
 
@@ -608,6 +644,12 @@ struct ChatView: View {
         guard controller.state == .ready else { return false }
         if !controller.attachments.isEmpty { return true }
         return !controller.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Mirror of the `.disabled(...)` predicate on the paperclip button.
+    /// Pulled out so the button's foreground branch reads cleanly.
+    private var attachDisabled: Bool {
+        controller.state != .ready || controller.attachments.count >= Self.maxAttachments
     }
 
     /// Pull JPEG/PNG bytes out of each PhotosPickerItem and feed them
