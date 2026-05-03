@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import ScarfCore
 import os
@@ -50,8 +51,65 @@ final class ProfilesViewModel {
         }
     }
 
+    /// Set the active profile via `hermes profile use <name>` without
+    /// relaunching Scarf. Most users will reach for `switchAndRelaunch`
+    /// instead — kept here so the context-menu "Use" item stays
+    /// functional and so callers that genuinely want a no-relaunch
+    /// switch (tests, scripted setups) have a path. Invalidates the
+    /// resolver cache on success so the next `context.paths` access
+    /// picks up the new home directory.
     func switchTo(_ profile: HermesProfile) {
-        runAndReload(["profile", "use", profile.name], success: "Active profile set to \(profile.name)")
+        Task.detached { [fileService] in
+            let result = fileService.runHermesCLI(args: ["profile", "use", profile.name], timeout: 60)
+            await MainActor.run {
+                if result.exitCode == 0 {
+                    HermesProfileResolver.invalidateCache()
+                    self.message = "Active profile set to \(profile.name) — restart Scarf to refresh."
+                } else {
+                    self.message = "Failed: \(result.output.prefix(120))"
+                }
+                self.load()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                    self?.message = nil
+                }
+            }
+        }
+    }
+
+    /// Set the active profile and immediately relaunch Scarf. The
+    /// canonical user-facing switch path (issue #70): a fresh process
+    /// guarantees every service constructs from the new
+    /// `~/.hermes/active_profile` value, sidestepping any in-process
+    /// state that might still be holding the previous profile's
+    /// data. Failures fall back to a "restart manually" toast.
+    @MainActor
+    func switchAndRelaunch(_ profile: HermesProfile) {
+        Task.detached { [fileService] in
+            let result = fileService.runHermesCLI(args: ["profile", "use", profile.name], timeout: 30)
+            await MainActor.run {
+                guard result.exitCode == 0 else {
+                    self.message = "Failed: \(result.output.prefix(120))"
+                    self.load()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                        self?.message = nil
+                    }
+                    return
+                }
+                HermesProfileResolver.invalidateCache()
+                do {
+                    try AppRelauncher.relaunch()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                        NSApp.terminate(nil)
+                    }
+                } catch AppRelauncher.RelaunchError.debugBuild {
+                    self.message = "Profile switched to \(profile.name). Restart Scarf manually (Xcode-launched instance)."
+                    self.load()
+                } catch {
+                    self.message = "Profile switched to \(profile.name). Please quit and reopen Scarf manually."
+                    self.load()
+                }
+            }
+        }
     }
 
     func create(name: String, cloneConfig: Bool, cloneAll: Bool) {

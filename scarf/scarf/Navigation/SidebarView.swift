@@ -16,6 +16,14 @@ struct SidebarView: View {
     @Environment(\.serverContext) private var serverContext
     @Environment(\.hermesCapabilities) private var capabilitiesStore
 
+    /// Currently-active Hermes profile name, surfaced as a header
+    /// chip on local contexts so users always see which profile
+    /// Scarf is reading from (issue #70 follow-up). Refreshed on
+    /// every section change as a cheap proxy for "user is
+    /// interacting with the app" — covers the rare case where the
+    /// user runs `hermes profile use` from a terminal mid-session.
+    @State private var activeProfileName: String = HermesProfileResolver.activeProfileName()
+
     /// Capability-gated sections. Curator is v0.12+ only; older Hermes
     /// hosts get the same Interact section minus the Curator row.
     /// Building the list lazily off the env keeps the sidebar honest
@@ -62,6 +70,14 @@ struct SidebarView: View {
         .background(.regularMaterial)
         .background(ScarfColor.backgroundTertiary.opacity(0.4))
         .splitViewAutosaveName("ScarfMainSidebar.\(serverContext.id)")
+        .onAppear {
+            HermesProfileResolver.invalidateCache()
+            activeProfileName = HermesProfileResolver.activeProfileName()
+        }
+        .onChange(of: coordinator.selectedSection) { _, _ in
+            HermesProfileResolver.invalidateCache()
+            activeProfileName = HermesProfileResolver.activeProfileName()
+        }
     }
 
     // MARK: - Header
@@ -76,6 +92,18 @@ struct SidebarView: View {
             Text("Scarf")
                 .scarfStyle(.bodyEmph)
                 .foregroundStyle(ScarfColor.foregroundPrimary)
+            // Active-profile chip — local contexts only. Remote
+            // ServerContexts don't read this Mac's active_profile
+            // file, so the chip would be misleading there.
+            if !serverContext.isRemote {
+                Button {
+                    coordinator.selectedSection = .profiles
+                } label: {
+                    ScarfBadge("profile: \(activeProfileName)", kind: .brand)
+                }
+                .buttonStyle(.plain)
+                .help("Active Hermes profile — click to manage")
+            }
             Spacer()
             Text(serverContext.displayName.lowercased())
                 .font(ScarfFont.caption2)

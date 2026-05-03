@@ -20,6 +20,12 @@ struct ProfilesView: View {
     @State private var renameTarget: HermesProfile?
     @State private var renameNewName = ""
     @State private var pendingDelete: HermesProfile?
+    /// Profile the user has clicked "Switch & Relaunch" on, awaiting
+    /// confirmation before we run `hermes profile use` and exit. The
+    /// confirmation step is load-bearing — relaunching closes every
+    /// open Scarf window in the process, so the user needs an explicit
+    /// agreement.
+    @State private var pendingSwitch: HermesProfile?
     /// Remote-import sheet visibility. Local imports use `NSOpenPanel`
     /// inline; remote imports route through `RemoteProfilePathSheet`
     /// because the zip the user wants to import lives on the remote
@@ -62,6 +68,18 @@ struct ProfilesView: View {
             Button("Cancel", role: .cancel) { pendingDelete = nil }
         } message: {
             Text("This removes the profile directory and all data within it. This cannot be undone.")
+        }
+        .confirmationDialog(
+            pendingSwitch.map { "Switch to '\($0.name)' and relaunch Scarf?" } ?? "",
+            isPresented: Binding(get: { pendingSwitch != nil }, set: { if !$0 { pendingSwitch = nil } })
+        ) {
+            Button("Switch & Relaunch") {
+                if let profile = pendingSwitch { viewModel.switchAndRelaunch(profile) }
+                pendingSwitch = nil
+            }
+            Button("Cancel", role: .cancel) { pendingSwitch = nil }
+        } message: {
+            Text("All Scarf windows will close and reopen. Unsaved chat input may be lost.")
         }
         .sheet(isPresented: $showRemoteImportSheet) {
             RemoteProfilePathSheet(
@@ -160,7 +178,9 @@ struct ProfilesView: View {
                     }
                     .tag(profile.id)
                     .contextMenu {
-                        Button("Use") { viewModel.switchTo(profile) }
+                        Button("Switch & Relaunch") { pendingSwitch = profile }
+                            .disabled(profile.isActive)
+                        Button("Set Active (no relaunch)") { viewModel.switchTo(profile) }
                             .disabled(profile.isActive)
                         Button("Rename") {
                             renameTarget = profile
@@ -215,16 +235,17 @@ struct ProfilesView: View {
                         Spacer()
                         if !profile.isActive {
                             Button {
-                                viewModel.switchTo(profile)
+                                pendingSwitch = profile
                             } label: {
-                                Label("Switch to This Profile", systemImage: "arrow.triangle.swap")
+                                Label("Switch & Relaunch", systemImage: "arrow.triangle.2.circlepath")
                             }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
+                            .help("Set as active profile and relaunch Scarf so every tab loads from \(profile.name)")
                         }
                     }
                     if !profile.isActive {
-                        profileSwitchWarning
+                        profileSwitchInfo
                     }
                     SettingsSection(title: "Details", icon: "info.circle") {
                         if !profile.path.isEmpty {
@@ -255,16 +276,16 @@ struct ProfilesView: View {
         }
     }
 
-    private var profileSwitchWarning: some View {
+    private var profileSwitchInfo: some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle")
-                .foregroundStyle(.orange)
-            Text("Switching the active profile changes the `~/.hermes` directory hermes uses. Restart Scarf after switching so it re-reads from the new profile's files.")
+            Image(systemName: "info.circle")
+                .foregroundStyle(.secondary)
+            Text("**Switch & Relaunch** sets this as the active profile (writes `~/.hermes/active_profile`) and relaunches Scarf so every tab — Webhooks, Sessions, SOUL.md, Memory — reloads from the new profile's `~/.hermes/profiles/<name>/` directory.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .padding(10)
-        .background(.orange.opacity(0.1))
+        .background(ScarfColor.backgroundSecondary)
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 

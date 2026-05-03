@@ -95,15 +95,20 @@ public enum HermesProfileResolver {
         let defaultHome = defaultRootHome()
         let activeFile = defaultHome + "/active_profile"
 
-        // Absent file → default profile. This is the common case for users
-        // who haven't run `hermes profile use ...` and shouldn't generate
-        // any log noise.
+        // Absent file → default profile. Common case for users who
+        // haven't run `hermes profile use ...`. We still log at
+        // `.info` (key=value, not warning) so support requests can
+        // pull `log show … | grep ProfileResolver` and confirm the
+        // resolver IS running and IS resolving to the default —
+        // distinguishing "feature didn't fire" from "feature fired
+        // and chose default" (issue #70).
         guard FileManager.default.fileExists(atPath: activeFile) else {
+            logger.info("Resolved active Hermes profile: name=default, home=\(defaultHome, privacy: .public), source=default-no-file")
             return ("default", defaultHome)
         }
 
         guard let raw = try? String(contentsOfFile: activeFile, encoding: .utf8) else {
-            logger.warning("Found active_profile but could not read it; falling back to default profile.")
+            logger.warning("Found active_profile but could not read it; falling back to default. home=\(defaultHome, privacy: .public)")
             return ("default", defaultHome)
         }
 
@@ -111,6 +116,7 @@ public enum HermesProfileResolver {
 
         // Empty file or explicit "default" → default profile.
         if trimmed.isEmpty || trimmed == "default" {
+            logger.info("Resolved active Hermes profile: name=default, home=\(defaultHome, privacy: .public), source=file-default")
             return ("default", defaultHome)
         }
 
@@ -129,7 +135,7 @@ public enum HermesProfileResolver {
             return ("default", defaultHome)
         }
 
-        logger.info("Resolved active Hermes profile to \(trimmed, privacy: .public) at \(profileHome, privacy: .public).")
+        logger.info("Resolved active Hermes profile: name=\(trimmed, privacy: .public), home=\(profileHome, privacy: .public), source=file")
         return (trimmed, profileHome)
     }
 
