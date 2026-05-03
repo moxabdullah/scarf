@@ -51,7 +51,19 @@ public enum HermesProfileResolver {
     /// Returns the default `~/.hermes` when no profile is active OR when
     /// the configured profile is invalid (logged) — so the worst-case
     /// failure mode is "Scarf shows what it always showed before."
+    ///
+    /// **Test override.** Setting `SCARF_HERMES_HOME` in the environment
+    /// pins this resolver to the supplied absolute path and bypasses both
+    /// the cache and the `active_profile` lookup. Used by the E2E test
+    /// harness (`TemplateE2ETests`, `TemplateInstallUITests`) to drive
+    /// Scarf against an isolated tmpdir Hermes home so the user's real
+    /// `~/.hermes` is never touched. Read on every call (cheap; a single
+    /// `ProcessInfo` lookup) so tests can flip it across test methods
+    /// without stale-cache surprises.
     public static func resolveLocalHome() -> String {
+        if let override = scarfHermesHomeOverride() {
+            return override
+        }
         return refreshIfNeeded().home
     }
 
@@ -60,7 +72,53 @@ public enum HermesProfileResolver {
     /// reading from (issue #50 follow-up: prevents the next variant
     /// of "where's my data — wrong profile" by making it visible).
     public static func activeProfileName() -> String {
+        if scarfHermesHomeOverride() != nil {
+            return "test-override"
+        }
         return refreshIfNeeded().name
+    }
+
+    /// Sentinel filename that the override path MUST contain for the
+    /// override to be honored. Without it, production code refuses to
+    /// pivot off the user's real `~/.hermes` even if the env var is
+    /// set. This is the "even if a test leaks the env var, even if
+    /// some non-test process inherits it, the user's data is safe"
+    /// belt-and-braces guard. Tests create this marker before
+    /// `setenv("SCARF_HERMES_HOME", ...)`.
+    public static let testHomeMarkerFilename = ".scarf-test-home-marker"
+
+    /// Read `SCARF_HERMES_HOME` from the environment. Returns `nil` when
+    /// unset or empty so production callers fall through to the profile
+    /// resolver. The override must:
+    ///   1. Be an absolute path — relative paths are rejected (they'd
+    ///      land relative to the cwd of whatever process happened to
+    ///      invoke the resolver, which is not what tests want).
+    ///   2. Contain the sentinel marker file
+    ///      `<path>/<testHomeMarkerFilename>`. Without the marker we
+    ///      treat the env var as untrusted and ignore it. This protects
+    ///      the user's real `~/.hermes/` from any code path that
+    ///      accidentally exports `SCARF_HERMES_HOME` to the wrong value
+    ///      (e.g. a test crashed mid-teardown, an env var inherited
+    ///      from a parent shell, a misconfigured launchctl plist).
+    /// Both checks are cheap — `FileManager.fileExists` against a
+    /// known path is microseconds. The override is hot but not
+    /// hot-hot, so an extra stat per call is negligible.
+    private static func scarfHermesHomeOverride() -> String? {
+        guard let raw = ProcessInfo.processInfo.environment["SCARF_HERMES_HOME"] else {
+            return nil
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard trimmed.hasPrefix("/") else {
+            logger.warning("SCARF_HERMES_HOME=\(trimmed, privacy: .public) is not absolute; ignoring.")
+            return nil
+        }
+        let markerPath = trimmed + "/" + testHomeMarkerFilename
+        guard FileManager.default.fileExists(atPath: markerPath) else {
+            logger.warning("SCARF_HERMES_HOME=\(trimmed, privacy: .public) lacks sentinel marker (\(testHomeMarkerFilename, privacy: .public)); ignoring to protect real ~/.hermes.")
+            return nil
+        }
+        return trimmed
     }
 
     /// Force a re-read on the next call, regardless of TTL. Test helper.

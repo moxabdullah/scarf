@@ -116,6 +116,15 @@ struct ChatView: View {
                             .lineLimit(showErrorDetails ? nil : 2)
                     }
                     Spacer()
+                    if let provider = viewModel.acpErrorOAuthProvider {
+                        Button("Re-authenticate") {
+                            coordinator.pendingOAuthReauth = provider
+                            coordinator.selectedSection = .credentialPools
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .help("Open Credential Pools and re-authenticate \(provider).")
+                    }
                     if viewModel.acpErrorDetails != nil {
                         Button(showErrorDetails ? "Hide details" : "Show details") {
                             showErrorDetails.toggle()
@@ -457,7 +466,11 @@ struct ChatView: View {
 
 // MARK: - Permission Approval View
 
-extension RichChatViewModel.PendingPermission: Identifiable {
+// `@retroactive` acknowledges that we're declaring conformance for a
+// type (`PendingPermission`) and protocol (`Identifiable`) we don't own
+// — the Swift 6 compiler flags this otherwise so that downstream
+// breakage is loud if `ScarfCore` ever adds the conformance upstream.
+extension RichChatViewModel.PendingPermission: @retroactive Identifiable {
     public var id: Int { requestId }
 }
 

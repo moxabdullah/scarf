@@ -40,6 +40,7 @@ struct ProjectsView: View {
     @State private var exportSheetProject: ProjectEntry?
     @State private var showingInstallURLPrompt = false
     @State private var installURLInput = ""
+    @State private var showingCatalogSheet = false
     @State private var showingUninstallSheet = false
     @State private var configEditorProject: ProjectEntry?
     /// Project queued for the "remove from list" confirmation dialog.
@@ -132,6 +133,17 @@ struct ProjectsView: View {
         .sheet(isPresented: $showingInstallURLPrompt) {
             installURLSheet
         }
+        .sheet(isPresented: $showingCatalogSheet) {
+            CatalogView { url in
+                // Hand the catalog's HTTPS URL to the existing install
+                // flow — no new entry-point logic, just a different
+                // way to surface the URL. The install sheet's
+                // `awaitingParentDirectory` stage takes over from here.
+                installerViewModel.openRemoteURL(url)
+                showingCatalogSheet = false
+                showingInstallSheet = true
+            }
+        }
         .sheet(isPresented: $showingUninstallSheet) {
             TemplateUninstallSheet(viewModel: uninstallerViewModel) { removed in
                 // Refresh the registry and clear selection if we just
@@ -198,13 +210,20 @@ struct ProjectsView: View {
     private var templatesToolbar: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             Menu {
+                Button("Browse Catalog…", systemImage: "books.vertical") {
+                    showingCatalogSheet = true
+                }
+                .accessibilityIdentifier("templates.browseCatalog")
+                Divider()
                 Button("Install from File…", systemImage: "tray.and.arrow.down") {
                     openInstallFilePicker()
                 }
+                .accessibilityIdentifier("templates.installFromFile")
                 Button("Install from URL…", systemImage: "link") {
                     installURLInput = ""
                     showingInstallURLPrompt = true
                 }
+                .accessibilityIdentifier("templates.installFromURL")
                 Divider()
                 if let selected = viewModel.selectedProject {
                     Button("Export \"\(selected.name)\" as Template…", systemImage: "tray.and.arrow.up") {
@@ -217,6 +236,7 @@ struct ProjectsView: View {
             } label: {
                 Label("Templates", systemImage: "shippingbox")
             }
+            .accessibilityIdentifier("templates.toolbar.menu")
         }
     }
 
@@ -229,6 +249,7 @@ struct ProjectsView: View {
                 .foregroundStyle(.secondary)
             TextField("https://example.com/my.scarftemplate", text: $installURLInput)
                 .textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("templates.installURL.field")
             HStack {
                 Button("Cancel") { showingInstallURLPrompt = false }
                     .keyboardShortcut(.cancelAction)
@@ -243,6 +264,7 @@ struct ProjectsView: View {
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
                 .disabled(URL(string: installURLInput)?.scheme?.lowercased() != "https")
+                .accessibilityIdentifier("templates.installURL.confirm")
             }
         }
         .padding()
