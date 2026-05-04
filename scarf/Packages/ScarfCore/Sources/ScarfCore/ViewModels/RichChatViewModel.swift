@@ -641,11 +641,23 @@ public final class RichChatViewModel {
     }
 
     private func appendMessageChunk(text: String) {
+        // ScarfMon "first byte" — fires once per turn, on the first
+        // visible message chunk. Splits "user tap → first byte"
+        // (network + Hermes thinking) from "first byte → turn end"
+        // (streaming + Scarf rendering) so we can attribute slow-feel
+        // bugs to the right side. `bytes` carries the first chunk's
+        // size, not the full turn.
+        if streamingAssistantText.isEmpty && currentTurnStart != nil {
+            ScarfMon.event(.chatStream, "firstByte", count: 1, bytes: text.utf8.count)
+        }
         streamingAssistantText += text
         upsertStreamingMessage()
     }
 
     private func appendThoughtChunk(text: String) {
+        if streamingThinkingText.isEmpty && currentTurnStart != nil {
+            ScarfMon.event(.chatStream, "firstThoughtByte", count: 1, bytes: text.utf8.count)
+        }
         streamingThinkingText += text
         upsertStreamingMessage()
     }
@@ -858,6 +870,12 @@ public final class RichChatViewModel {
 
     /// Convert the streaming message (id=0) into a permanent message and reset streaming state.
     private func finalizeStreamingMessage() {
+        ScarfMon.measure(.chatStream, "finalizeStreamingMessage") {
+            _finalizeStreamingMessageImpl()
+        }
+    }
+
+    private func _finalizeStreamingMessageImpl() {
         guard let idx = messages.firstIndex(where: { $0.id == Self.streamingId }) else { return }
 
         // Only finalize if there's actual content

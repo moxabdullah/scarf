@@ -18,10 +18,23 @@ struct HermesFileService: Sendable {
 
     nonisolated func loadConfig() -> HermesConfig {
         ScarfMon.measure(.diskIO, "loadConfig") {
+            // ScarfMon — when Full mode is on, log the first stack
+            // frame above this call to the perf Logger channel so
+            // mystery callers (e.g. config reads with no user action)
+            // can be identified by tailing
+            //   `log stream --predicate 'subsystem == "com.scarf.mon"'`.
+            // Symbol-only — no addresses, no PII. Backtrace alloc is
+            // gated on isActive so it's free outside Full mode.
+            if ScarfMon.isActive {
+                let caller = Thread.callStackSymbols.dropFirst(2).first ?? "<unknown>"
+                Self.perfLogger.debug("loadConfig caller: \(caller, privacy: .public)")
+            }
             guard let content = readFile(context.paths.configYAML) else { return .empty }
             return parseConfig(content)
         }
     }
+
+    private static let perfLogger = Logger(subsystem: "com.scarf.mon", category: "HermesFileService")
 
     /// Error-surfacing config load. Used by Dashboard to show the user a
     /// specific reason when config.yaml can't be read on a remote host

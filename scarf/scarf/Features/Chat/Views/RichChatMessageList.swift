@@ -41,7 +41,12 @@ struct RichChatMessageList: View {
     /// we can reintroduce lazy with a preference-key-based height
     /// measurement, but that's a much larger change.
     var body: some View {
-        ScrollViewReader { proxy in
+        // ScarfMon — confirms whether the parent re-issues the
+        // ForEach. If this fires once and we still see RichMessageBubble.body
+        // burst N times, churn lives inside the bubbles (or in their inputs).
+        // If this fires N times, the ForEach itself is being rebuilt.
+        let _: Void = ScarfMon.event(.chatRender, "mac.RichChatMessageList.body")
+        return ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if groups.isEmpty && !isWorking {
