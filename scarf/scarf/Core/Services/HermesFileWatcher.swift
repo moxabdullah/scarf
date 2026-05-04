@@ -76,11 +76,21 @@ final class HermesFileWatcher {
     /// (Re)start the SSH polling stream over the union of `watchedCorePaths`
     /// and the current `remoteProjectPaths`. Called on initial start and
     /// whenever `updateProjectWatches` changes the project set.
+    ///
+    /// ScarfMon — `mac.fileWatcher.remoteRestart` (event) fires once per
+    /// poller restart with `bytes` carrying the path count. Frequent
+    /// restarts mean the project-list update path is churning; pair
+    /// with `mac.fileWatcher.remoteTick` from the upstream transport
+    /// (`ssh.streamScript` / `transport.watchPaths`) to see actual
+    /// poll cadence.
     private func startRemotePoller() {
         remotePollTask?.cancel()
-        let stream = transport.watchPaths(watchedCorePaths + remoteProjectPaths)
+        let pathSet = watchedCorePaths + remoteProjectPaths
+        ScarfMon.event(.transport, "mac.fileWatcher.remoteRestart", count: 1, bytes: pathSet.count)
+        let stream = transport.watchPaths(pathSet)
         remotePollTask = Task { [weak self] in
             for await _ in stream {
+                ScarfMon.event(.transport, "mac.fileWatcher.remoteDelta", count: 1)
                 await MainActor.run { [weak self] in
                     self?.lastChangeDate = Date()
                 }
@@ -146,6 +156,12 @@ final class HermesFileWatcher {
             queue: .main
         )
         source.setEventHandler { [weak self] in
+            // ScarfMon — fires every time FSEvents detects a change on
+            // a watched core or project path. High counts during
+            // streaming chats are normal (state.db-wal ticks per
+            // message persisted); high counts when nothing's happening
+            // suggest a runaway watcher install.
+            ScarfMon.event(.transport, "mac.fileWatcher.localFire", count: 1)
             self?.lastChangeDate = Date()
         }
         source.setCancelHandler {

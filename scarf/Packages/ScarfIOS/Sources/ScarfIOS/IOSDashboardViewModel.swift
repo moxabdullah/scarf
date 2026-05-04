@@ -70,10 +70,13 @@ public final class IOSDashboardViewModel {
             return
         }
 
-        stats = await dataService.fetchStats()
-        recentSessions = await dataService.fetchSessions(limit: 5)
-        allSessions = await dataService.fetchSessions(limit: 25)
-        sessionPreviews = await dataService.fetchSessionPreviews(limit: 25)
+        await ScarfMon.measureAsync(.sessionLoad, "ios.loadDashboard") {
+            stats = await dataService.fetchStats()
+            recentSessions = await dataService.fetchSessions(limit: 5)
+            allSessions = await dataService.fetchSessions(limit: 25)
+            sessionPreviews = await dataService.fetchSessionPreviews(limit: 25)
+        }
+        ScarfMon.event(.sessionLoad, "ios.allSessions.count", count: allSessions.count)
 
         // Attribution lookup (pass-2 UX): load the session→project
         // sidecar + project registry once so Dashboard rows can show
@@ -126,6 +129,7 @@ public final class IOSDashboardViewModel {
 
     /// Called from the pull-to-refresh gesture.
     public func refresh() async {
+        ScarfMon.event(.sessionLoad, "ios.dashboardRefresh.trigger", count: 1)
         await load()
     }
 }

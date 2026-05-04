@@ -188,22 +188,26 @@ public actor HermesDataService {
         limit: Int,
         before: Int? = nil
     ) async -> [HermesMessage] {
-        let sql: String
-        let params: [SQLValue]
-        if let before {
-            sql = "SELECT \(messageColumns) FROM messages WHERE session_id = ? AND id < ? ORDER BY id DESC LIMIT ?"
-            params = [.text(sessionId), .integer(Int64(before)), .integer(Int64(limit))]
-        } else {
-            sql = "SELECT \(messageColumns) FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?"
-            params = [.text(sessionId), .integer(Int64(limit))]
-        }
-        do {
-            let rows = try await backend.query(sql, params: params)
-            // Caller wants chronological (oldest-first) order; the SELECT
-            // is DESC for the LIMIT to bite the newest rows, so reverse.
-            return rows.map { messageFromRow($0) }.reversed()
-        } catch {
-            return []
+        await ScarfMon.measureAsync(.sessionLoad, "mac.fetchMessages") {
+            let sql: String
+            let params: [SQLValue]
+            if let before {
+                sql = "SELECT \(messageColumns) FROM messages WHERE session_id = ? AND id < ? ORDER BY id DESC LIMIT ?"
+                params = [.text(sessionId), .integer(Int64(before)), .integer(Int64(limit))]
+            } else {
+                sql = "SELECT \(messageColumns) FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?"
+                params = [.text(sessionId), .integer(Int64(limit))]
+            }
+            do {
+                let rows = try await backend.query(sql, params: params)
+                // Caller wants chronological (oldest-first) order; the SELECT
+                // is DESC for the LIMIT to bite the newest rows, so reverse.
+                let messages = rows.map { messageFromRow($0) }.reversed() as [HermesMessage]
+                ScarfMon.event(.sessionLoad, "mac.fetchMessages.rows", count: messages.count)
+                return messages
+            } catch {
+                return []
+            }
         }
     }
 

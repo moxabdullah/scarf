@@ -470,13 +470,15 @@ public final class RichChatViewModel {
 
     /// Re-fetch session metadata from DB to pick up cost/token updates.
     public func refreshSessionFromDB() async {
-        guard let sessionId else { return }
-        let opened = await dataService.open()
-        guard opened else { return }
-        if let session = await dataService.fetchSession(id: sessionId) {
-            currentSession = session
+        await ScarfMon.measureAsync(.sessionLoad, "mac.refreshSessionFromDB") {
+            guard let sessionId else { return }
+            let opened = await dataService.open()
+            guard opened else { return }
+            if let session = await dataService.fetchSession(id: sessionId) {
+                currentSession = session
+            }
+            await dataService.close()
         }
-        await dataService.close()
     }
 
     // MARK: - ACP Event Handling
@@ -1015,6 +1017,7 @@ public final class RichChatViewModel {
     /// Load message history from the DB, optionally combining an origin session
     /// (e.g., CLI session) with the current ACP session.
     public func loadSessionHistory(sessionId: String, acpSessionId: String? = nil) async {
+        await ScarfMon.measureAsync(.sessionLoad, "mac.hydrateMessages") {
         self.sessionId = sessionId
         // Force a fresh snapshot pull on remote contexts. An earlier open()
         // would have cached a stale copy — on resume we need whatever
@@ -1100,7 +1103,9 @@ public final class RichChatViewModel {
             .map(\.id)
             .min()
         hasMoreHistory = moreHistory
+        ScarfMon.event(.sessionLoad, "mac.hydrateMessages.rows", count: messages.count)
         buildMessageGroups()
+        } // end measureAsync(.sessionLoad, "mac.hydrateMessages")
     }
 
     // MARK: - Load Earlier (pagination)
