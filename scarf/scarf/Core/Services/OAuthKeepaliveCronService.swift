@@ -81,12 +81,19 @@ final class OAuthKeepaliveCronService {
     @discardableResult
     nonisolated func enable() async -> Bool {
         if isEnabled() { return true }
+        // `hermes cron create` only accepts: --name, --deliver,
+        // --repeat, --skill, --script, --workdir. The `silent: Bool?`
+        // field on HermesCronJob is JSON-only (Hermes can write it,
+        // but the CLI's create verb doesn't expose a flag for it).
+        // Pass any unknown flag and argparse rejects the whole
+        // command, so stick to the supported surface and let Hermes
+        // pick its default delivery target — the side effect we care
+        // about (token refresh during session boot) fires regardless.
         let result = await Task.detached { [fileService] in
             fileService.runHermesCLI(
                 args: [
                     "cron", "create",
                     "--name", Self.jobName,
-                    "--silent",
                     Self.defaultSchedule,
                     Self.defaultPrompt,
                 ],
