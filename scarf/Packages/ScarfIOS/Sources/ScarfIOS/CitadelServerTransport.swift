@@ -272,14 +272,32 @@ public final class CitadelServerTransport: ServerTransport, @unchecked Sendable 
         // Polling-based, identical in shape to `SSHTransport`'s remote-
         // watch fallback: stat each path, yield `.anyChanged` when any
         // mtime shifts. 3s tick keeps bandwidth low.
+        //
+        // ScarfMon — A1 instrumentation:
+        // - `ios.fileWatcher.tick` (interval) — full poll cycle latency,
+        //   includes the SSH stat round-trips. Pre-fix this is what an
+        //   "out of sync" user is feeling: anything > 1500 ms means
+        //   the channel is congested or the host is slow.
+        // - `ios.fileWatcher.delta` (event) — fires only when the
+        //   signature actually changed. Low ratio (delta count / tick
+        //   count) means we're polling more aggressively than the
+        //   change rate warrants — opens the door to dropping the 3s
+        //   cadence on LAN.
+        // - `ios.fileWatcher.paths` (event with bytes=count) — number
+        //   of paths watched per cycle, helps explain a slow tick when
+        //   the project list grows.
         AsyncStream { continuation in
             let task = Task.detached { [weak self] in
                 var lastSignature = ""
                 while !Task.isCancelled {
                     guard let self else { break }
-                    let current = await self.buildWatchSignature(for: paths)
+                    ScarfMon.event(.transport, "ios.fileWatcher.paths", count: 1, bytes: paths.count)
+                    let current = await ScarfMon.measureAsync(.transport, "ios.fileWatcher.tick") {
+                        await self.buildWatchSignature(for: paths)
+                    }
                     if !current.isEmpty, current != lastSignature {
                         if !lastSignature.isEmpty {
+                            ScarfMon.event(.transport, "ios.fileWatcher.delta", count: 1)
                             continuation.yield(.anyChanged)
                         }
                         lastSignature = current
