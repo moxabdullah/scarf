@@ -25,6 +25,31 @@ struct NousSubscriptionState: Sendable, Hashable {
     /// to line up: auth record present *and* `nous` is the active provider.
     /// Mirrors `NousSubscriptionFeatures.subscribed` on the Python side.
     var subscribed: Bool { present && providerIsNous }
+
+    /// Days since the auth record was last touched (refreshed by Hermes
+    /// or re-authed by the user). Hermes refreshes on every agent boot,
+    /// so a large value here means the user hasn't started a session
+    /// recently — which is exactly when the refresh token is at risk
+    /// of expiring (typical ~30 day lifetime). Returns nil when
+    /// `updatedAt` is unknown (older Hermes versions). Capped at
+    /// `Int.max` to avoid overflow on absurd inputs.
+    func daysSinceLastRefresh(now: Date = Date()) -> Int? {
+        guard let updatedAt else { return nil }
+        let seconds = now.timeIntervalSince(updatedAt)
+        guard seconds > 0 else { return 0 }
+        return Int(seconds / 86_400)
+    }
+
+    /// True when we haven't seen a Hermes refresh in ≥14 days — half
+    /// the typical 30-day Nous refresh-token lifetime. This is the
+    /// trigger for the "enable keepalive" nudge: still recoverable
+    /// (refresh token hasn't expired yet) but heading there. Returns
+    /// false when `updatedAt` is unknown — we don't nudge on missing
+    /// data, only on confirmed staleness.
+    var hasStaleRefresh: Bool {
+        guard let days = daysSinceLastRefresh() else { return false }
+        return days >= 14
+    }
 }
 
 /// Reads `auth.json` to detect Nous Portal subscription state. Delegates file

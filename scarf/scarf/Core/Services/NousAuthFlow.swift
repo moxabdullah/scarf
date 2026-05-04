@@ -62,27 +62,36 @@ final class NousAuthFlow {
         output = ""
         state = .starting
 
-        let proc = context.makeTransport().makeProcess(
-            executable: context.paths.hermesBinary,
-            args: ["auth", "add", "nous", "--no-browser"]
-        )
-        if !context.isRemote {
-            // Only enrich env locally — remote ssh gets the remote login env
-            // naturally, and exporting our local keys into it would be wrong.
+        // Python block-buffers stdout when it's a pipe (not a TTY). The
+        // device-code flow prints the verification URL + user code, then
+        // enters a ~15-minute polling loop that never hits `input()` —
+        // so nothing flushes and our readability handler never sees the
+        // output. Users see the sheet spinning forever while hermes is
+        // actually waiting for approval.
+        //
+        // PKCE doesn't have this problem because `input("Authorization
+        // code: ")` flushes stdout before blocking, which is why
+        // OAuthFlowController works without this setting.
+        //
+        // Local: set on `proc.environment`. Remote: setting
+        // `proc.environment` would only configure the local-side ssh
+        // process, NOT the remote python interpreter — ssh doesn't
+        // forward arbitrary env without `SendEnv` configured on both
+        // sides. So for remote we wrap the command in `env
+        // PYTHONUNBUFFERED=1 …`, which prefixes the var into the
+        // remote command's environment regardless of ssh config.
+        let proc: Process
+        if context.isRemote {
+            proc = context.makeTransport().makeProcess(
+                executable: "env",
+                args: ["PYTHONUNBUFFERED=1", context.paths.hermesBinary, "auth", "add", "nous", "--no-browser"]
+            )
+        } else {
+            proc = context.makeTransport().makeProcess(
+                executable: context.paths.hermesBinary,
+                args: ["auth", "add", "nous", "--no-browser"]
+            )
             var env = HermesFileService.enrichedEnvironment()
-            // Python block-buffers stdout when it's a pipe (not a TTY). The
-            // device-code flow prints the verification URL + user code, then
-            // enters a ~15-minute polling loop that never hits `input()` —
-            // so nothing flushes and our readability handler never sees the
-            // output. Users see the sheet spinning forever while hermes is
-            // actually waiting for approval.
-            //
-            // PKCE doesn't have this problem because `input("Authorization
-            // code: ")` flushes stdout before blocking, which is why
-            // OAuthFlowController works without this setting.
-            //
-            // PYTHONUNBUFFERED forces line-buffered stdout for the whole
-            // subprocess — tiny perf cost, huge UX win for device-code.
             env["PYTHONUNBUFFERED"] = "1"
             proc.environment = env
         }

@@ -15,8 +15,27 @@ struct CredentialPoolsView: View {
     @State private var reauthInitialProvider: String?
     @Environment(AppCoordinator.self) private var coordinator
 
+    /// Mirror of `OAuthKeepaliveCronService.isEnabled()` so the
+    /// toggle reads from local @State (instant) instead of hitting
+    /// disk on every render. `nil` while the initial probe is in
+    /// flight; reloaded on appear and after every enable/disable.
+    @State private var keepaliveEnabled: Bool?
+    @State private var keepaliveBusy: Bool = false
+    @State private var keepaliveError: String?
+    /// Cached Nous subscription state. Used by `keepaliveSection` to
+    /// surface a contextual nudge when the auth record hasn't been
+    /// refreshed in ≥14 days — that's exactly when enabling the
+    /// keepalive cron is highest-value. Loaded async on appear; the
+    /// section renders without the nudge while this is `.absent`.
+    @State private var nousSubscription: NousSubscriptionState = .absent
+
+    private let keepalive: OAuthKeepaliveCronService
+    private let nousService: NousSubscriptionService
+
     init(context: ServerContext) {
         _viewModel = State(initialValue: CredentialPoolsViewModel(context: context))
+        self.keepalive = OAuthKeepaliveCronService(context: context)
+        self.nousService = NousSubscriptionService(context: context)
     }
 
 
@@ -32,6 +51,7 @@ struct CredentialPoolsView: View {
                         emptyState
                     } else {
                         if !viewModel.oauthProviders.isEmpty {
+                            keepaliveSection
                             oauthProvidersSection
                         }
                         ForEach(viewModel.pools) { pool in
@@ -53,6 +73,7 @@ struct CredentialPoolsView: View {
         .onAppear {
             viewModel.load()
             consumePendingReauth()
+            probeKeepalive()
         }
         .onChange(of: coordinator.pendingOAuthReauth) { _, _ in
             consumePendingReauth()
@@ -89,6 +110,104 @@ struct CredentialPoolsView: View {
         reauthInitialProvider = pending
         showAddSheet = true
         coordinator.pendingOAuthReauth = nil
+    }
+
+    /// Read the current keepalive cron job state off the main
+    /// thread. Disk reads on remote contexts can take 100–300ms
+    /// (one SFTP round-trip for `~/.hermes/cron/jobs.json`) so this
+    /// hops to a detached task and only flips `keepaliveEnabled` on
+    /// MainActor when the result lands. Concurrently loads the Nous
+    /// subscription record so the staleness nudge is computed off
+    /// the same probe.
+    private func probeKeepalive() {
+        let svc = keepalive
+        let nous = nousService
+        Task.detached {
+            let enabled = svc.isEnabled()
+            let state = nous.loadState()
+            await MainActor.run {
+                keepaliveEnabled = enabled
+                nousSubscription = state
+            }
+        }
+    }
+
+    /// Section above the OAuth providers list with a single toggle
+    /// that registers / removes a Scarf-owned daily cron job. The
+    /// job's only purpose is to boot a Hermes session, which is what
+    /// causes Hermes to refresh OAuth access tokens (no standalone
+    /// CLI verb for refresh exists today). Hidden until we know the
+    /// current state — flickering the toggle off→on on view appear
+    /// would be confusing.
+    @ViewBuilder
+    private var keepaliveSection: some View {
+        let isOn = keepaliveEnabled ?? false
+        let stale = nousSubscription.hasStaleRefresh && keepaliveEnabled == false
+        SettingsSection(title: LocalizedStringKey("Keep tokens fresh"), icon: "arrow.clockwise") {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "arrow.clockwise.circle")
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle(isOn: Binding(
+                        get: { isOn },
+                        set: { newValue in toggleKeepalive(to: newValue) }
+                    )) {
+                        Text("Auto-refresh OAuth tokens daily")
+                            .font(.system(.body, weight: .medium))
+                    }
+                    .toggleStyle(.switch)
+                    .disabled(keepaliveEnabled == nil || keepaliveBusy)
+                    Text("Registers a `\(OAuthKeepaliveCronService.jobName)` cron job that runs at 4am daily. Booting a Hermes session is what triggers token refresh — without this, refresh tokens silently expire if you go ~30 days without using Scarf.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if stale, let days = nousSubscription.daysSinceLastRefresh() {
+                        HStack(spacing: 6) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                            Text("Your Nous subscription was last refreshed \(days) days ago. Enable the toggle above to prevent the refresh token from expiring.")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(.top, 4)
+                    }
+                    if let err = keepaliveError {
+                        Text(err)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .textSelection(.enabled)
+                    }
+                }
+                Spacer(minLength: 0)
+                if keepaliveBusy {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.quaternary.opacity(0.3))
+        }
+    }
+
+    private func toggleKeepalive(to newValue: Bool) {
+        guard !keepaliveBusy else { return }
+        keepaliveBusy = true
+        keepaliveError = nil
+        let svc = keepalive
+        Task.detached {
+            let ok = newValue ? await svc.enable() : await svc.disable()
+            let actualState = svc.isEnabled()
+            await MainActor.run {
+                keepaliveBusy = false
+                keepaliveEnabled = actualState
+                if !ok {
+                    keepaliveError = newValue
+                        ? "Couldn't register the keepalive cron job. Check `hermes cron` works in a terminal."
+                        : "Couldn't remove the keepalive cron job. Check `hermes cron remove` works in a terminal."
+                }
+            }
+        }
     }
 
     private var header: some View {

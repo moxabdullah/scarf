@@ -93,15 +93,29 @@ final class OAuthFlowController {
         // local spawns hermes directly, remote rounds through ssh -T while
         // preserving stdin (for the auth-code prompt) and stdout (for the
         // URL parser).
-        let proc = context.makeTransport().makeProcess(
-            executable: context.paths.hermesBinary,
-            args: args
-        )
-        if !context.isRemote {
-            // Only enrich env locally — the remote ssh process gets the
-            // remote login env naturally, and exporting our local API keys
-            // into it would be wrong.
-            proc.environment = HermesFileService.enrichedEnvironment()
+        //
+        // PYTHONUNBUFFERED forces line-buffered Python stdout so the URL
+        // banner reaches us before `input("Authorization code: ")`
+        // blocks. PKCE *usually* recovers because input() flushes, but
+        // certain providers print preamble lines AFTER the prompt that
+        // we still want streamed in real time. Local: set on
+        // `proc.environment`. Remote: ssh doesn't forward arbitrary env
+        // vars without `SendEnv` configured, so wrap the command in
+        // `env PYTHONUNBUFFERED=1 …` to inject it on the remote side.
+        let proc: Process
+        if context.isRemote {
+            proc = context.makeTransport().makeProcess(
+                executable: "env",
+                args: ["PYTHONUNBUFFERED=1", context.paths.hermesBinary] + args
+            )
+        } else {
+            proc = context.makeTransport().makeProcess(
+                executable: context.paths.hermesBinary,
+                args: args
+            )
+            var env = HermesFileService.enrichedEnvironment()
+            env["PYTHONUNBUFFERED"] = "1"
+            proc.environment = env
         }
 
         let outPipe = Pipe()
