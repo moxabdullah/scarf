@@ -77,7 +77,7 @@ public actor RemoteSQLiteBackend: HermesQueryBackend {
         let preflight = """
         set -e
         sqlite3 --version
-        sqlite3 -readonly -json '\(escape(dbPath))' "PRAGMA table_info(sessions); PRAGMA table_info(messages);"
+        sqlite3 -readonly -json \(quoteForRemoteShell(dbPath)) "PRAGMA table_info(sessions); PRAGMA table_info(messages);"
         """
 
         do {
@@ -131,7 +131,7 @@ public actor RemoteSQLiteBackend: HermesQueryBackend {
         let inlined = SQLValueInliner.inline(sql, params: params)
         let dbPath = context.paths.stateDB
         let script = """
-        sqlite3 -readonly -json '\(escape(dbPath))' <<'__SCARF_SQL__'
+        sqlite3 -readonly -json \(quoteForRemoteShell(dbPath)) <<'__SCARF_SQL__'
         \(inlined)
         __SCARF_SQL__
         """
@@ -166,7 +166,7 @@ public actor RemoteSQLiteBackend: HermesQueryBackend {
         let combined = sqlBlocks.joined(separator: "\n")
         let dbPath = context.paths.stateDB
         let script = """
-        sqlite3 -readonly -json '\(escape(dbPath))' <<'__SCARF_SQL__'
+        sqlite3 -readonly -json \(quoteForRemoteShell(dbPath)) <<'__SCARF_SQL__'
         \(combined)
         __SCARF_SQL__
         """
@@ -501,12 +501,43 @@ public actor RemoteSQLiteBackend: HermesQueryBackend {
 
     // MARK: - Quoting + error mapping
 
-    /// Defensive escape for paths embedded in single-quoted shell
-    /// strings. Real Hermes paths never contain `'`, but doubling the
-    /// escape doesn't cost anything and keeps us safe against future
-    /// surprise.
-    private func escape(_ path: String) -> String {
-        path.replacingOccurrences(of: "'", with: "'\\''")
+    /// Build the shell argument that the remote `sh -c` will see for
+    /// the SQLite path. Two cases:
+    ///
+    /// 1. **Tilde-prefixed** (`~/.hermes/state.db`, `~`). sqlite3
+    ///    itself doesn't expand `~` — that's a shell affordance. The
+    ///    snapshot pipeline used to handle this via SSHTransport's
+    ///    `remotePathArg`, but the new streaming backend doesn't go
+    ///    through that helper. Rewrite to `"$HOME/...rest..."` and
+    ///    rely on the remote shell's $HOME expansion. Mirrors the
+    ///    pattern that fixed snapshot-mode paths in the previous
+    ///    architecture (and matches `SSHTransport.remotePathArg`).
+    /// 2. **Absolute** (`/home/agent/.hermes/state.db`). Single-quote
+    ///    + double single-quote escape, same as the simple case.
+    ///
+    /// Without this rewrite, a default-config Digital Ocean / Hetzner
+    /// server with `paths.stateDB == "~/.hermes/state.db"` produces
+    /// `unable to open database "~/.hermes/state.db"` because sqlite3
+    /// looks for a literal directory named `~`.
+    private func quoteForRemoteShell(_ path: String) -> String {
+        if path == "~" {
+            return "\"$HOME\""
+        }
+        if path.hasPrefix("~/") {
+            let rest = String(path.dropFirst(2))
+            // Defensively escape characters that have special meaning
+            // inside a double-quoted shell string. Hermes paths never
+            // contain these in practice but the cost is zero.
+            let escaped = rest
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+                .replacingOccurrences(of: "$", with: "\\$")
+                .replacingOccurrences(of: "`", with: "\\`")
+            return "\"$HOME/\(escaped)\""
+        }
+        // Absolute path. Single-quote with the standard sh escape for
+        // any embedded single-quote (close, escape, reopen).
+        return "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     /// Translate a non-zero sqlite3 exit into a user-presentable

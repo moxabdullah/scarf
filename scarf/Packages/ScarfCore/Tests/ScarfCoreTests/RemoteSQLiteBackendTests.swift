@@ -216,6 +216,49 @@ private struct LocalSQLite3Transport: ServerTransport {
         )
     }
 
+    /// Construct a remote-shaped context that uses the default
+    /// `~/.hermes` remote home — exercises the tilde-expansion path
+    /// in `RemoteSQLiteBackend.quoteForRemoteShell`. The fixture DB
+    /// is symlinked at `$HOME/.hermes/state.db` so the shell-expanded
+    /// path resolves correctly. Cleanup restores anything we move.
+    /// Returns the original-symlink (or absent state) so the caller
+    /// can restore on teardown.
+    private struct DefaultHomeFixture {
+        let dbURL: URL
+        let stateLink: URL
+        let backupURL: URL?
+        let context: ServerContext
+    }
+    private func makeDefaultHomeFixtureContext(dbURL: URL) throws -> DefaultHomeFixture {
+        let homeURL = URL(fileURLWithPath: NSHomeDirectory())
+        let hermesDir = homeURL.appendingPathComponent(".hermes", isDirectory: true)
+        try FileManager.default.createDirectory(at: hermesDir, withIntermediateDirectories: true)
+        let stateLink = hermesDir.appendingPathComponent("state.db")
+        // If something is already at ~/.hermes/state.db (the user's
+        // real Hermes install on dev machines), move it aside so we
+        // can put our fixture in its place. Restore on teardown.
+        var backupURL: URL?
+        if FileManager.default.fileExists(atPath: stateLink.path) {
+            let bak = hermesDir.appendingPathComponent("state.db.scarf-test-bak-\(UUID().uuidString)")
+            try FileManager.default.moveItem(at: stateLink, to: bak)
+            backupURL = bak
+        }
+        try FileManager.default.createSymbolicLink(at: stateLink, withDestinationURL: dbURL)
+        let ctx = ServerContext(
+            id: UUID(),
+            displayName: "fixture",
+            kind: .ssh(SSHConfig(host: "fake.invalid"))
+            // No remoteHome override → defaults to "~/.hermes".
+        )
+        return DefaultHomeFixture(dbURL: dbURL, stateLink: stateLink, backupURL: backupURL, context: ctx)
+    }
+    private func cleanupDefaultHomeFixture(_ fixture: DefaultHomeFixture) {
+        try? FileManager.default.removeItem(at: fixture.stateLink)
+        if let bak = fixture.backupURL {
+            try? FileManager.default.moveItem(at: bak, to: fixture.stateLink)
+        }
+    }
+
     /// Skip the test if /usr/bin/sqlite3 isn't available. Mirrors how
     /// other Apple-only tests gate on system tooling.
     private func requireSqlite3() throws {
@@ -225,6 +268,32 @@ private struct LocalSQLite3Transport: ServerTransport {
     }
 
     // MARK: - open() / schema detection
+
+    /// Regression: a default-config remote with `paths.stateDB ==
+    /// "~/.hermes/state.db"` previously hit `unable to open database
+    /// "~/.hermes/state.db"` because the backend single-quoted the
+    /// path and sqlite3 doesn't expand `~` itself. Verify the
+    /// $HOME-rewrite path works against a real shell.
+    @Test func openWithDefaultTildeHomeExpands() async throws {
+        try requireSqlite3()
+        let dbURL = try makeFixtureStateDB()
+        let fixture = try makeDefaultHomeFixtureContext(dbURL: dbURL)
+        defer {
+            cleanupDefaultHomeFixture(fixture)
+            try? FileManager.default.removeItem(at: dbURL)
+            try? FileManager.default.removeItem(at: dbURL.deletingLastPathComponent())
+        }
+        let backend = RemoteSQLiteBackend(context: fixture.context, transport: LocalSQLite3Transport())
+
+        let opened = await backend.open()
+        #expect(opened)
+        let err = await backend.lastOpenError
+        #expect(err == nil)
+
+        // And actually run a query through the same expansion path.
+        let rows = try await backend.query("SELECT id FROM sessions", params: [])
+        #expect(rows.count == 1)
+    }
 
     @Test func openProbesSchemaSuccessfully() async throws {
         try requireSqlite3()
