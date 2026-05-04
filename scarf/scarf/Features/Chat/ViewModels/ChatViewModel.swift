@@ -34,6 +34,20 @@ final class ChatViewModel {
     var recentSessions: [HermesSession] = []
     var sessionPreviews: [String: String] = [:]
 
+    /// Debounce handle for watcher-driven `loadRecentSessions` calls.
+    /// During an active ACP conversation the file watcher fires many
+    /// times per second (every message Hermes persists writes to
+    /// `state.db-wal`); without this, every tick spawned a fresh
+    /// reload task whose `recentSessions = …` reassignment re-rendered
+    /// the chat sidebar and caused the list to visibly disappear /
+    /// reappear during a streaming response. The debounce coalesces
+    /// rapid bursts into one trailing fetch ~500 ms after the last
+    /// tick. Created/resumed sessions still appear immediately because
+    /// `startACPSession` and `autoStartACPAndSend` call
+    /// `loadRecentSessions()` directly outside this path.
+    @ObservationIgnored
+    private var sessionsRefreshTask: Task<Void, Never>?
+
     /// Per-recent-session project attribution. Keyed by `HermesSession.id`,
     /// value is the project's display name. Populated alongside
     /// `recentSessions` via a single batched read in `loadRecentSessions()`.
@@ -333,6 +347,14 @@ final class ChatViewModel {
 
                 richChatViewModel.setSessionId(resolvedSessionId)
                 acpStatus = "Connected (\(resolvedSessionId.prefix(12)))"
+
+                // Surface the freshly-created session in the chat
+                // sidebar immediately. We can't lean on the file
+                // watcher to do this — it fires unconditionally
+                // through `scheduleSessionsRefresh` which has a
+                // 500 ms debounce. An explicit call here keeps the
+                // "type → see new chat in the list" feedback prompt.
+                await loadRecentSessions()
 
                 // Now send the queued prompt
                 sendViaACP(client: client, text: text, images: images)
@@ -833,6 +855,30 @@ final class ChatViewModel {
     }
 
     // MARK: - Recent Sessions
+
+    /// Coalesce rapid `loadRecentSessions` triggers into one trailing
+    /// fetch. Hooked up to the file-watcher tick in `ChatView`; during
+    /// an ACP message stream the watcher fires 5–10 times per second
+    /// as Hermes appends to `state.db-wal`, and an unconditional
+    /// reload on each tick would visibly flicker the chat sidebar
+    /// while the response streams in.
+    ///
+    /// The 500 ms window is short enough that idle external changes
+    /// (a session created from another `hermes` invocation, a rename
+    /// from another window) still appear "soon" without explicit user
+    /// action, and long enough to absorb a streaming-response burst.
+    /// Newly created / resumed sessions in *this* window don't depend
+    /// on the debounce — `startACPSession` and `autoStartACPAndSend`
+    /// call `loadRecentSessions()` synchronously after the session id
+    /// resolves, so the chat sidebar updates immediately.
+    func scheduleSessionsRefresh() {
+        sessionsRefreshTask?.cancel()
+        sessionsRefreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            if Task.isCancelled { return }
+            await self?.loadRecentSessions()
+        }
+    }
 
     func loadRecentSessions() async {
         let opened = await dataService.open()

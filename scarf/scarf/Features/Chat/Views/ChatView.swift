@@ -65,7 +65,17 @@ struct ChatView: View {
             }
         }
         .onChange(of: fileWatcher.lastChangeDate) {
-            Task { await viewModel.loadRecentSessions() }
+            // Debounced rather than immediate. During an active ACP
+            // message stream the watcher fires many times per second
+            // (every persisted message bumps `state.db-wal`'s mtime);
+            // an unconditional reload on each tick caused the chat
+            // sidebar to visibly flicker as `recentSessions` was
+            // reassigned over and over with the same data. The
+            // debounced helper coalesces bursts into one trailing
+            // fetch ~500 ms after the last tick. New sessions still
+            // appear immediately because the create/resume paths
+            // call `loadRecentSessions()` synchronously themselves.
+            viewModel.scheduleSessionsRefresh()
             viewModel.refreshCredentialPreflight()
         }
         // Live handoff from the per-project Sessions tab: the tab
