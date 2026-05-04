@@ -78,7 +78,17 @@ struct CredentialPoolsView: View {
         .onChange(of: coordinator.pendingOAuthReauth) { _, _ in
             consumePendingReauth()
         }
-        .sheet(isPresented: $showAddSheet, onDismiss: { reauthInitialProvider = nil }) {
+        .sheet(isPresented: $showAddSheet, onDismiss: {
+            // Refresh after every dismiss — the OAuth flow rewrites
+            // `auth.json` on success, but the sheet self-closes
+            // before SwiftUI re-renders the parent. Without this,
+            // users had to hit Reload manually after a successful
+            // re-auth to see the expiry badge clear and the new
+            // `tokenTail` populate.
+            reauthInitialProvider = nil
+            viewModel.load()
+            probeKeepalive()
+        }) {
             AddCredentialSheet(viewModel: viewModel, initialProvider: reauthInitialProvider) {
                 showAddSheet = false
             }
