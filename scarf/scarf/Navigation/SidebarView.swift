@@ -44,8 +44,11 @@ struct SidebarView: View {
         manage.append(contentsOf: [.health, .logs, .settings])
 
         return [
-            Section(title: "Monitor",  items: [.dashboard, .insights, .sessions, .activity]),
+            // Projects sits first now — promoting it to a first-class
+            // entry point reflects how users actually open Scarf
+            // (start with a project, not the dashboard).
             Section(title: "Projects", items: [.projects]),
+            Section(title: "Monitor",  items: [.dashboard, .insights, .sessions, .activity]),
             Section(title: "Interact", items: interact),
             Section(title: "Configure", items: [.platforms, .personalities, .quickCommands, .credentialPools, .plugins, .webhooks, .profiles]),
             Section(title: "Manage",   items: manage),
@@ -83,31 +86,40 @@ struct SidebarView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack(spacing: ScarfSpace.s2) {
-            Image(nsImage: sidebarIconImage)
-                .resizable()
-                .interpolation(.high)
-                .frame(width: 22, height: 22)
-                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-            Text("Scarf")
-                .scarfStyle(.bodyEmph)
-                .foregroundStyle(ScarfColor.foregroundPrimary)
+        VStack(alignment: .leading, spacing: ScarfSpace.s1) {
+            HStack(spacing: ScarfSpace.s2) {
+                Image(nsImage: sidebarIconImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 22, height: 22)
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                Text("Scarf")
+                    .scarfStyle(.bodyEmph)
+                    .foregroundStyle(ScarfColor.foregroundPrimary)
+                Spacer()
+                Text(serverContext.displayName.lowercased())
+                    .font(ScarfFont.caption2)
+                    .foregroundStyle(ScarfColor.foregroundFaint)
+            }
             // Active-profile chip — local contexts only. Remote
             // ServerContexts don't read this Mac's active_profile
-            // file, so the chip would be misleading there.
+            // file, so the chip would be misleading there. Anchored
+            // to the trailing edge so it sits visually under the
+            // server name in the row above; saves horizontal space
+            // in the top row when the server name + chip would
+            // otherwise compete.
             if !serverContext.isRemote {
-                Button {
-                    coordinator.selectedSection = .profiles
-                } label: {
-                    ScarfBadge("profile: \(activeProfileName)", kind: .brand)
+                HStack(spacing: 0) {
+                    Spacer()
+                    Button {
+                        coordinator.selectedSection = .profiles
+                    } label: {
+                        ScarfBadge("profile: \(activeProfileName)", kind: .brand)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Active Hermes profile — click to manage")
                 }
-                .buttonStyle(.plain)
-                .help("Active Hermes profile — click to manage")
             }
-            Spacer()
-            Text(serverContext.displayName.lowercased())
-                .font(ScarfFont.caption2)
-                .foregroundStyle(ScarfColor.foregroundFaint)
         }
         .padding(.horizontal, ScarfSpace.s4)
         .padding(.top, 19) // Half the original 38 px traffic-light clearance.
