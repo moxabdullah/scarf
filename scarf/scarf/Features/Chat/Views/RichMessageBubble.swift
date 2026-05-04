@@ -58,6 +58,11 @@ struct RichMessageBubble: View, Equatable {
     }
 
     var body: some View {
+        // Per-bubble render counter. The streaming bubble re-renders
+        // per token; cross-reference with `mac.ChatView.body` and
+        // `chatStream.handleACPEvent` to see whether streaming churn
+        // lives in the parent, the bubble, or the event handler.
+        let _: Void = ScarfMon.event(.chatRender, "mac.RichMessageBubble.body")
         if message.isUser {
             userBubble
         } else if message.isAssistant {

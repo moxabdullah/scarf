@@ -17,8 +17,10 @@ struct HermesFileService: Sendable {
     // MARK: - Config
 
     nonisolated func loadConfig() -> HermesConfig {
-        guard let content = readFile(context.paths.configYAML) else { return .empty }
-        return parseConfig(content)
+        ScarfMon.measure(.diskIO, "loadConfig") {
+            guard let content = readFile(context.paths.configYAML) else { return .empty }
+            return parseConfig(content)
+        }
     }
 
     /// Error-surfacing config load. Used by Dashboard to show the user a
@@ -480,13 +482,15 @@ struct HermesFileService: Sendable {
     // MARK: - Cron
 
     nonisolated func loadCronJobs() -> [HermesCronJob] {
-        guard let data = readFileData(context.paths.cronJobsJSON) else { return [] }
-        do {
-            let file = try JSONDecoder().decode(CronJobsFile.self, from: data)
-            return file.jobs
-        } catch {
-            print("[Scarf] Failed to decode cron jobs: \(error.localizedDescription)")
-            return []
+        ScarfMon.measure(.diskIO, "loadCronJobs") {
+            guard let data = readFileData(context.paths.cronJobsJSON) else { return [] }
+            do {
+                let file = try JSONDecoder().decode(CronJobsFile.self, from: data)
+                return file.jobs
+            } catch {
+                print("[Scarf] Failed to decode cron jobs: \(error.localizedDescription)")
+                return []
+            }
         }
     }
 

@@ -17,6 +17,12 @@ struct ChatView: View {
     private var showInspector: Bool = true
 
     var body: some View {
+        // ScarfMon body-evaluation counter — tracks how many times
+        // SwiftUI re-evaluates this view per second during streaming.
+        // High counts here usually mean state is fanning out further
+        // than necessary; pair with `mac.RichMessageBubble.body` to
+        // see whether the churn lives in the parent or the bubbles.
+        let _: Void = ScarfMon.event(.chatRender, "mac.ChatView.body")
         @Bindable var vm = viewModel
         @Bindable var coord = coordinator
         VStack(spacing: 0) {

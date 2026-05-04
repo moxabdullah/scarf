@@ -66,7 +66,12 @@ struct ChatView: View {
     )!
 
     var body: some View {
-        VStack(spacing: 0) {
+        // ScarfMon body-evaluation counter. Re-render churn during
+        // streaming is one of the load-bearing perf signals; rendering
+        // here costs ~one signpost emit + ring-buffer append (off the
+        // hot path otherwise).
+        let _: Void = ScarfMon.event(.chatRender, "ios.ChatView.body")
+        return VStack(spacing: 0) {
             connectionBanner
             errorBanner
             projectContextBar
@@ -1254,6 +1259,12 @@ final class ChatController {
     /// assistant reply streams back as ACP notifications handled by
     /// the event task.
     func send() async {
+        await ScarfMon.measureAsync(.chatStream, "ios.send") {
+            await _sendImpl()
+        }
+    }
+
+    private func _sendImpl() async {
         guard state == .ready, let client else { return }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         // v0.12+ allows image-only sends — vision models accept "describe
@@ -1358,7 +1369,10 @@ final class ChatController {
             let stream = await client.events
             for await event in stream {
                 guard !Task.isCancelled else { break }
-                self?.vm.handleACPEvent(event)
+                ScarfMon.event(.chatStream, "ios.acpEvent", count: 1)
+                ScarfMon.measure(.chatStream, "ios.handleACPEvent") {
+                    self?.vm.handleACPEvent(event)
+                }
             }
             // Stream ended — if we weren't explicitly cancelled the
             // channel died (EOF on stdin/out, write to dead pipe,
@@ -1788,6 +1802,12 @@ final class ChatController {
     /// to `session/load` if the remote doesn't support `session/resume`
     /// (Hermes < 0.9.x).
     func startResuming(sessionID: String) async {
+        await ScarfMon.measureAsync(.sessionLoad, "ios.startResuming") {
+            await _startResumingImpl(sessionID: sessionID)
+        }
+    }
+
+    private func _startResumingImpl(sessionID: String) async {
         guard await passModelPreflight(intent: .resume(sessionID: sessionID)) else { return }
         await stop()
         vm.reset()
@@ -1952,6 +1972,11 @@ private struct MessageBubble: View, Equatable {
     }
 
     var body: some View {
+        // Per-bubble render counter. The streaming bubble
+        // (`message.id == 0`) re-renders on every chunk; tracking the
+        // count here is what tells us if a slow chat is bottlenecked
+        // on body re-eval vs. event-loop delivery.
+        let _: Void = ScarfMon.event(.chatRender, "ios.MessageBubble.body")
         if message.isToolResult {
             ToolResultRow(message: message)
         } else {

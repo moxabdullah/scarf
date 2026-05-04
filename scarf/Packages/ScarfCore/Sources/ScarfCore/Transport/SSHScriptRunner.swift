@@ -46,16 +46,18 @@ public enum SSHScriptRunner {
     /// cross-platform we return a connect failure on non-macOS so
     /// the file compiles everywhere.
     public static func run(script: String, context: ServerContext, timeout: TimeInterval = 30) async -> Outcome {
-        #if os(macOS)
-        switch context.kind {
-        case .local:
-            return await runLocally(script: script, timeout: timeout)
-        case .ssh(let config):
-            return await runOverSSH(script: script, config: config, timeout: timeout)
+        await ScarfMon.measureAsync(.transport, "ssh.run") {
+            #if os(macOS)
+            switch context.kind {
+            case .local:
+                return await runLocally(script: script, timeout: timeout)
+            case .ssh(let config):
+                return await runOverSSH(script: script, config: config, timeout: timeout)
+            }
+            #else
+            return .connectFailure("SSHScriptRunner is only available on macOS")
+            #endif
         }
-        #else
-        return .connectFailure("SSHScriptRunner is only available on macOS")
-        #endif
     }
 
     // MARK: - SSH path

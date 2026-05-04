@@ -395,6 +395,7 @@ final class ChatViewModel {
     }
 
     private func sendViaACP(client: ACPClient, text: String, images: [ChatImageAttachment] = []) {
+        ScarfMon.event(.chatStream, "mac.sendViaACP", count: 1, bytes: text.utf8.count)
         guard let sessionId = richChatViewModel.sessionId else {
             clearACPErrorState()
             acpError = "No session ID — cannot send"
@@ -434,7 +435,9 @@ final class ChatViewModel {
         }
         acpPromptTask = Task { @MainActor in
             do {
-                let result = try await client.sendPrompt(sessionId: sessionId, text: wireText, images: images)
+                let result = try await ScarfMon.measureAsync(.chatStream, "mac.sendPrompt") {
+                    try await client.sendPrompt(sessionId: sessionId, text: wireText, images: images)
+                }
                 acpStatus = "Ready"
                 richChatViewModel.handleACPEvent(
                     .promptComplete(sessionId: sessionId, response: result)
@@ -475,6 +478,7 @@ final class ChatViewModel {
     // MARK: - ACP Session Management
 
     private func startACPSession(resume sessionId: String?, projectPath: String? = nil) {
+        ScarfMon.event(.sessionLoad, "mac.startACPSession", count: 1)
         stopACP()
         clearACPErrorState()
 
@@ -655,7 +659,10 @@ final class ChatViewModel {
             let eventStream = await client.events
             for await event in eventStream {
                 guard !Task.isCancelled else { break }
-                self?.richChatViewModel.handleACPEvent(event)
+                ScarfMon.event(.chatStream, "mac.acpEvent", count: 1)
+                ScarfMon.measure(.chatStream, "mac.handleACPEvent") {
+                    self?.richChatViewModel.handleACPEvent(event)
+                }
                 self?.acpStatus = await client.statusMessage
             }
             // Stream ended — if we weren't cancelled, the connection died

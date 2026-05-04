@@ -179,6 +179,12 @@ public final class CitadelServerTransport: ServerTransport, @unchecked Sendable 
     /// untouched — same correctness guarantee as `SSHScriptRunner`'s
     /// stdin-pipe approach.
     public func streamScript(_ script: String, timeout: TimeInterval) async throws -> ProcessResult {
+        try await ScarfMon.measureAsync(.transport, "ssh.streamScript") {
+            try await _streamScriptImpl(script, timeout: timeout)
+        }
+    }
+
+    private func _streamScriptImpl(_ script: String, timeout: TimeInterval) async throws -> ProcessResult {
         let scriptBytes = Data(script.utf8)
         let b64 = scriptBytes.base64EncodedString()
         // Prepend the same PATH guard that `asyncRunProcess` uses so

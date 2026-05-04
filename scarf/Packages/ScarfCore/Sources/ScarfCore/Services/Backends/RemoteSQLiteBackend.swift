@@ -149,27 +149,37 @@ public actor RemoteSQLiteBackend: HermesQueryBackend {
     // MARK: - Queries
 
     public func query(_ sql: String, params: [SQLValue]) async throws -> [Row] {
-        guard isOpen else { throw BackendError.notOpen }
-        let inlined = SQLValueInliner.inline(sql, params: params)
-        let dbPath = context.paths.stateDB
-        let script = """
-        sqlite3 -readonly -json \(quoteForRemoteShell(dbPath)) <<'__SCARF_SQL__'
-        \(inlined)
-        __SCARF_SQL__
-        """
-        let result: ProcessResult
-        do {
-            result = try await transport.streamScript(script, timeout: queryTimeout)
-        } catch {
-            throw BackendError.transport(error.localizedDescription)
+        try await ScarfMon.measureAsync(.sqlite, "query") {
+            guard isOpen else { throw BackendError.notOpen }
+            let inlined = SQLValueInliner.inline(sql, params: params)
+            let dbPath = context.paths.stateDB
+            let script = """
+            sqlite3 -readonly -json \(quoteForRemoteShell(dbPath)) <<'__SCARF_SQL__'
+            \(inlined)
+            __SCARF_SQL__
+            """
+            let result: ProcessResult
+            do {
+                result = try await transport.streamScript(script, timeout: queryTimeout)
+            } catch {
+                throw BackendError.transport(error.localizedDescription)
+            }
+            if result.exitCode != 0 {
+                throw BackendError.sqlite(exitCode: result.exitCode, stderr: result.stderrString)
+            }
+            let rows = try parseSingleResultSet(result.stdoutString)
+            ScarfMon.event(.sqlite, "query.rows", count: rows.count, bytes: result.stdout.count)
+            return rows
         }
-        if result.exitCode != 0 {
-            throw BackendError.sqlite(exitCode: result.exitCode, stderr: result.stderrString)
-        }
-        return try parseSingleResultSet(result.stdoutString)
     }
 
     public func queryBatch(_ statements: [(sql: String, params: [SQLValue])]) async throws -> [[Row]] {
+        try await ScarfMon.measureAsync(.sqlite, "queryBatch") {
+            try await _queryBatchImpl(statements)
+        }
+    }
+
+    private func _queryBatchImpl(_ statements: [(sql: String, params: [SQLValue])]) async throws -> [[Row]] {
         guard isOpen else { throw BackendError.notOpen }
         if statements.isEmpty { return [] }
         // Build one sqlite3 invocation with marker SELECTs separating
