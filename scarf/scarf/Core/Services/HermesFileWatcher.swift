@@ -10,6 +10,10 @@ final class HermesFileWatcher {
     /// Remote polling task. Non-nil only when `context.isRemote`. Cancelled
     /// on `stopWatching()`.
     private var remotePollTask: Task<Void, Never>?
+    /// Project directory paths fed to the SSH poller alongside `watchedCorePaths`.
+    /// Updated by `updateProjectWatches` so the remote stream restarts whenever
+    /// the project list changes.
+    private var remoteProjectPaths: [String] = []
 
     let context: ServerContext
     private let transport: any ServerTransport
@@ -52,17 +56,7 @@ final class HermesFileWatcher {
 
     func startWatching() {
         if context.isRemote {
-            // FSEvents doesn't reach across SSH. Drive lastChangeDate off
-            // the transport's AsyncStream, which polls stat mtime on a
-            // shared ControlMaster channel (~5ms per tick).
-            let stream = transport.watchPaths(watchedCorePaths)
-            remotePollTask = Task { [weak self] in
-                for await _ in stream {
-                    await MainActor.run { [weak self] in
-                        self?.lastChangeDate = Date()
-                    }
-                }
-            }
+            startRemotePoller()
             return
         }
 
@@ -79,6 +73,21 @@ final class HermesFileWatcher {
         // touches `gateway_state.json` which the watcher catches.
     }
 
+    /// (Re)start the SSH polling stream over the union of `watchedCorePaths`
+    /// and the current `remoteProjectPaths`. Called on initial start and
+    /// whenever `updateProjectWatches` changes the project set.
+    private func startRemotePoller() {
+        remotePollTask?.cancel()
+        let stream = transport.watchPaths(watchedCorePaths + remoteProjectPaths)
+        remotePollTask = Task { [weak self] in
+            for await _ in stream {
+                await MainActor.run { [weak self] in
+                    self?.lastChangeDate = Date()
+                }
+            }
+        }
+    }
+
     func stopWatching() {
         for source in coreSources + projectSources {
             source.cancel()
@@ -91,17 +100,37 @@ final class HermesFileWatcher {
         remotePollTask = nil
     }
 
-    func updateProjectWatches(_ dashboardPaths: [String]) {
-        // Remote contexts don't support per-project FSEvents watches today —
-        // the shared mtime poll covers the core set. Adding per-project
-        // polling is a Phase 4 polish item.
-        guard !context.isRemote else { return }
+    /// Watch each project's `dashboard.json` AND its enclosing `.scarf/`
+    /// directory. Watching both is what lets file-reading widgets
+    /// (markdown_file, log_tail, image) refresh when a cron job rewrites
+    /// a sidecar file: dir-level FSEvents fire on add/remove/rename inside
+    /// `.scarf/`, file-level FSEvents fire on dashboard.json content
+    /// changes. In-place writes to an existing sidecar file (e.g., `>>` log
+    /// append) are NOT detected — by convention the cron job should write
+    /// atomically (write-then-rename) or `touch dashboard.json` after each
+    /// run.
+    func updateProjectWatches(dashboardPaths: [String], scarfDirs: [String]) {
+        if context.isRemote {
+            // Restart the SSH poller with the union of core + project dir
+            // paths. `stat -c %Y` on a directory tracks mtime, which ticks
+            // on add/remove/rename inside the dir — same coverage as the
+            // local FSEvents directory watch below.
+            let union = Array(Set(dashboardPaths + scarfDirs))
+            remoteProjectPaths = union.sorted()
+            startRemotePoller()
+            return
+        }
         for source in projectSources {
             source.cancel()
         }
         projectSources.removeAll()
         for path in dashboardPaths {
             if let source = makeSource(for: path) {
+                projectSources.append(source)
+            }
+        }
+        for dir in scarfDirs {
+            if let source = makeSource(for: dir) {
                 projectSources.append(source)
             }
         }

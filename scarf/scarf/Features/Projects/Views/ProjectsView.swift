@@ -94,7 +94,7 @@ struct ProjectsView: View {
                let project = viewModel.projects.first(where: { $0.name == name }) {
                 viewModel.selectProject(project)
             }
-            fileWatcher.updateProjectWatches(viewModel.dashboardPaths)
+            fileWatcher.updateProjectWatches(dashboardPaths: viewModel.dashboardPaths, scarfDirs: viewModel.projectScarfDirs)
             // Cold-launch deep link or Finder double-click: the router may
             // have a URL staged before this view installed the onChange
             // observer below. Without this first-appearance check,
@@ -107,7 +107,7 @@ struct ProjectsView: View {
         }
         .onChange(of: fileWatcher.lastChangeDate) {
             viewModel.load()
-            fileWatcher.updateProjectWatches(viewModel.dashboardPaths)
+            fileWatcher.updateProjectWatches(dashboardPaths: viewModel.dashboardPaths, scarfDirs: viewModel.projectScarfDirs)
         }
         .onChange(of: TemplateURLRouter.shared.pendingInstallURL) { _, new in
             // A URL landed *while the app was already running*.
@@ -122,7 +122,7 @@ struct ProjectsView: View {
                 if let project = viewModel.projects.first(where: { $0.name == entry.name }) {
                     viewModel.selectProject(project)
                 }
-                fileWatcher.updateProjectWatches(viewModel.dashboardPaths)
+                fileWatcher.updateProjectWatches(dashboardPaths: viewModel.dashboardPaths, scarfDirs: viewModel.projectScarfDirs)
             }
         }
         .sheet(item: $exportSheetProject) { project in
@@ -155,7 +155,7 @@ struct ProjectsView: View {
                     coordinator.selectedProjectName = nil
                 }
                 viewModel.load()
-                fileWatcher.updateProjectWatches(viewModel.dashboardPaths)
+                fileWatcher.updateProjectWatches(dashboardPaths: viewModel.dashboardPaths, scarfDirs: viewModel.projectScarfDirs)
             }
         }
         .sheet(item: $configEditorProject) { project in
@@ -339,7 +339,7 @@ struct ProjectsView: View {
         .sheet(isPresented: $showingAddSheet) {
             AddProjectSheet(context: serverContext) { name, path in
                 viewModel.addProject(name: name, path: path)
-                fileWatcher.updateProjectWatches(viewModel.dashboardPaths)
+                fileWatcher.updateProjectWatches(dashboardPaths: viewModel.dashboardPaths, scarfDirs: viewModel.projectScarfDirs)
             }
         }
         .sheet(item: $renameTarget) { target in
@@ -485,6 +485,9 @@ struct ProjectsView: View {
             .padding()
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
+        // v2.7: file-reading widgets (markdown_file, log_tail, image-local)
+        // resolve their `path` field against this root via WidgetPathResolver.
+        .environment(\.selectedProjectRoot, viewModel.selectedProject?.path)
     }
 
     private func siteTab(_ widget: DashboardWidget) -> some View {
@@ -600,19 +603,22 @@ struct WidgetView: View {
                 ListWidgetView(widget: widget)
             case "webview":
                 WebviewWidgetView(widget: widget)
+            case "cron_status":
+                CronStatusWidgetView(widget: widget)
+            case "log_tail":
+                LogTailWidgetView(widget: widget)
+            case "markdown_file":
+                MarkdownFileWidgetView(widget: widget)
+            case "image":
+                ImageWidgetView(widget: widget)
+            case "status_grid":
+                StatusGridWidgetView(widget: widget)
             default:
-                VStack {
-                    Image(systemName: "questionmark.square.dashed")
-                        .font(.title2)
-                        .foregroundStyle(.secondary)
-                    Text("Unknown: \(widget.type)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, minHeight: 60)
-                .padding(12)
-                .background(.quaternary.opacity(0.5))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                WidgetErrorCard(
+                    title: widget.title,
+                    reason: "Unknown widget type: \"\(widget.type)\"",
+                    hint: "This Scarf build doesn't render this widget type. Update Scarf or change the widget type in dashboard.json. Known types are listed in tools/widget-schema.json."
+                )
             }
         }
     }

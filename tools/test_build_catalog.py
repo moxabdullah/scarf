@@ -266,6 +266,174 @@ class ValidationTests(unittest.TestCase):
         _, errors = self._validate_all()
         self.assertTrue(any("unknown type" in str(e) for e in errors), errors)
 
+    def test_rejects_widget_missing_required_field(self):
+        # 'progress' requires both title + value; omit value.
+        bad_dashboard = {
+            "version": 1,
+            "title": "Bad",
+            "sections": [{"title": "x", "columns": 1, "widgets": [
+                {"type": "progress", "title": "Loading"},
+            ]}],
+        }
+        manifest = {
+            "schemaVersion": 1,
+            "id": "tester/missing-required",
+            "name": "Missing",
+            "version": "1.0.0",
+            "description": "missing required field",
+            "contents": {"dashboard": True, "agentsMd": True},
+        }
+        make_template_dir(
+            self.repo, "tester", "missing-required",
+            manifest=manifest,
+            bundle_files={
+                "template.json": json.dumps(manifest).encode("utf-8"),
+                "README.md": b"# readme",
+                "AGENTS.md": b"# agents",
+                "dashboard.json": json.dumps(bad_dashboard).encode("utf-8"),
+            },
+        )
+        _, errors = self._validate_all()
+        self.assertTrue(
+            any("missing required field 'value'" in str(e) for e in errors),
+            errors,
+        )
+
+    def test_widget_schema_loads_and_lists_known_types(self):
+        # Sanity check: schema includes the v2.2 originals so old templates
+        # keep validating.
+        for t in ("stat", "progress", "text", "table", "chart", "list", "webview"):
+            self.assertIn(t, build_catalog.SUPPORTED_WIDGET_TYPES)
+
+    def test_widget_schema_includes_v2_7_additions(self):
+        # v2.7 added markdown_file, log_tail, cron_status, image, status_grid.
+        for t in ("markdown_file", "log_tail", "cron_status", "image", "status_grid"):
+            self.assertIn(t, build_catalog.SUPPORTED_WIDGET_TYPES)
+
+    def test_v2_7_widgets_accept_canonical_minimum_fields(self):
+        # Build one bundle whose dashboard exercises every v2.7 addition with
+        # its canonical required fields populated. If any per-type rule
+        # over-tightens, this test catches it before catalog publishing.
+        ok_dashboard = {
+            "version": 1,
+            "title": "v2.7 sampler",
+            "sections": [{
+                "title": "Sample",
+                "columns": 2,
+                "widgets": [
+                    {"type": "stat", "title": "Sites", "value": 4, "sparkline": [1, 2, 3, 2, 4]},
+                    {"type": "list", "title": "Status",
+                     "items": [{"text": "auth.example.com", "status": "ok"},
+                               {"text": "api.example.com", "status": "down"}]},
+                    {"type": "markdown_file", "title": "Weekly", "path": "reports/weekly.md"},
+                    {"type": "log_tail", "title": "Tail", "path": "reports/run.log", "lines": 30},
+                    {"type": "cron_status", "title": "Job", "jobId": "uptime-sweep"},
+                    {"type": "image", "title": "Pic", "path": "reports/chart.png"},
+                    {"type": "status_grid", "title": "Fleet", "cells": [
+                        {"label": "us-east-1", "status": "success"},
+                        {"label": "us-west-2", "status": "warning"},
+                        {"label": "eu-central-1", "status": "danger"},
+                    ]},
+                ],
+            }],
+        }
+        manifest = {
+            "schemaVersion": 1,
+            "id": "tester/v2_7",
+            "name": "v2.7 sampler",
+            "version": "1.0.0",
+            "description": "exercises every v2.7 widget",
+            "contents": {"dashboard": True, "agentsMd": True},
+        }
+        make_template_dir(
+            self.repo, "tester", "v2_7",
+            manifest=manifest,
+            bundle_files={
+                "template.json": json.dumps(manifest).encode("utf-8"),
+                "README.md": b"# readme",
+                "AGENTS.md": b"# agents",
+                "dashboard.json": json.dumps(ok_dashboard).encode("utf-8"),
+            },
+        )
+        templates, errors = self._validate_all()
+        self.assertEqual(errors, [], f"unexpected errors: {errors}")
+
+    def test_v2_7_widgets_reject_missing_required(self):
+        # Each v2.7 file/cron/grid widget has a required field. A bundle that
+        # omits any of them should be rejected.
+        bad_dashboard = {
+            "version": 1,
+            "title": "Bad sampler",
+            "sections": [{
+                "title": "Bad",
+                "columns": 1,
+                "widgets": [
+                    {"type": "markdown_file", "title": "no path"},
+                    {"type": "log_tail", "title": "no path"},
+                    {"type": "cron_status", "title": "no jobId"},
+                    {"type": "status_grid", "title": "no cells"},
+                ],
+            }],
+        }
+        manifest = {
+            "schemaVersion": 1,
+            "id": "tester/v2_7_bad",
+            "name": "Bad",
+            "version": "1.0.0",
+            "description": "missing required fields",
+            "contents": {"dashboard": True, "agentsMd": True},
+        }
+        make_template_dir(
+            self.repo, "tester", "v2_7_bad",
+            manifest=manifest,
+            bundle_files={
+                "template.json": json.dumps(manifest).encode("utf-8"),
+                "README.md": b"# readme",
+                "AGENTS.md": b"# agents",
+                "dashboard.json": json.dumps(bad_dashboard).encode("utf-8"),
+            },
+        )
+        _, errors = self._validate_all()
+        # Expect at least one missing-required error per offending widget.
+        for required, label in [("path", "markdown_file"), ("path", "log_tail"),
+                                ("jobId", "cron_status"), ("cells", "status_grid")]:
+            self.assertTrue(
+                any(f"missing required field '{required}'" in str(e) and label in str(e) for e in errors),
+                f"expected missing `{required}` error for {label}; got: {errors}",
+            )
+
+    def test_cron_status_requires_jobId(self):
+        bad_dashboard = {
+            "version": 1,
+            "title": "Bad",
+            "sections": [{"title": "x", "columns": 1, "widgets": [
+                {"type": "cron_status", "title": "Without jobId"},
+            ]}],
+        }
+        manifest = {
+            "schemaVersion": 1,
+            "id": "tester/cron-no-id",
+            "name": "Cron",
+            "version": "1.0.0",
+            "description": "missing jobId",
+            "contents": {"dashboard": True, "agentsMd": True},
+        }
+        make_template_dir(
+            self.repo, "tester", "cron-no-id",
+            manifest=manifest,
+            bundle_files={
+                "template.json": json.dumps(manifest).encode("utf-8"),
+                "README.md": b"# readme",
+                "AGENTS.md": b"# agents",
+                "dashboard.json": json.dumps(bad_dashboard).encode("utf-8"),
+            },
+        )
+        _, errors = self._validate_all()
+        self.assertTrue(
+            any("missing required field 'jobId'" in str(e) for e in errors),
+            errors,
+        )
+
     def test_rejects_secret_in_bundle(self):
         leaky = b"config:\n  github_token: ghp_" + b"A" * 40 + b"\n"
         manifest = {

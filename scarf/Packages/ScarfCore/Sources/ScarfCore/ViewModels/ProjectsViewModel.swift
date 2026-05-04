@@ -164,6 +164,16 @@ public final class ProjectsViewModel {
         projects.map(\.dashboardPath)
     }
 
+    /// Per-project `.scarf/` directories — watched alongside `dashboardPaths`
+    /// so that file-reading widgets (markdown_file, log_tail, image) refresh
+    /// when their underlying files are added / removed / renamed inside the
+    /// directory by a cron job. In-place file appends within an existing
+    /// file are NOT detected here; the cron job should write atomically
+    /// (write-then-rename) or `touch` dashboard.json after each run.
+    public var projectScarfDirs: [String] {
+        projects.map(\.scarfDir)
+    }
+
     private func loadDashboard(for project: ProjectEntry) {
         dashboardError = nil
         if !service.dashboardExists(for: project) {

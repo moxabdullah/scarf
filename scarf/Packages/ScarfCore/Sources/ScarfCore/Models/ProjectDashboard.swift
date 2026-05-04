@@ -39,6 +39,13 @@ public struct ProjectEntry: Codable, Sendable, Identifiable, Hashable {
 
     public var dashboardPath: String { path + "/.scarf/dashboard.json" }
 
+    /// Directory holding the project's Scarf-managed sidecar files
+    /// (dashboard.json, manifest.json, template.lock.json, config.json,
+    /// plus any cron-job-written reports the dashboard widgets reference).
+    /// Watched as a unit by `HermesFileWatcher` so any file added /
+    /// removed / renamed inside refreshes the dashboard automatically.
+    public var scarfDir: String { path + "/.scarf" }
+
     // MARK: - Codable (custom for backward compat)
 
     private enum CodingKeys: String, CodingKey {
@@ -152,29 +159,54 @@ public struct DashboardWidget: Codable, Sendable, Identifiable {
     // List
     public let items: [ListItem]?
 
-    // Webview
+    // Webview / Image (image reuses `url` for remote, `path` for local)
     public let url: String?
     public let height: Double?
+
+    // v2.7 — file-reading widgets (markdown_file, log_tail, image-local).
+    // `path` is resolved relative to the project root (the directory that
+    // contains `.scarf/`). Renderers must reject `..` segments after
+    // normalization to prevent escape from the project boundary.
+    public let path: String?
+    public let lines: Int?
+
+    // v2.7 — cron_status widget; `jobId` matches HermesCronJob.id.
+    public let jobId: String?
+
+    // v2.7 — status_grid widget; `cells` carries label + status per square,
+    // `gridColumns` overrides the auto-fit column count (keep distinct
+    // from `columns` which is the table-widget header list).
+    public let cells: [StatusGridCell]?
+    public let gridColumns: Int?
+
+    // v2.7 — optional sparkline trend on `stat` widgets.
+    public let sparkline: [Double]?
 
     public init(
         type: String,
         title: String,
-        value: WidgetValue?,
-        icon: String?,
-        color: String?,
-        subtitle: String?,
-        label: String?,
-        content: String?,
-        format: String?,
-        columns: [String]?,
-        rows: [[String]]?,
-        chartType: String?,
-        xLabel: String?,
-        yLabel: String?,
-        series: [ChartSeries]?,
-        items: [ListItem]?,
-        url: String?,
-        height: Double?
+        value: WidgetValue? = nil,
+        icon: String? = nil,
+        color: String? = nil,
+        subtitle: String? = nil,
+        label: String? = nil,
+        content: String? = nil,
+        format: String? = nil,
+        columns: [String]? = nil,
+        rows: [[String]]? = nil,
+        chartType: String? = nil,
+        xLabel: String? = nil,
+        yLabel: String? = nil,
+        series: [ChartSeries]? = nil,
+        items: [ListItem]? = nil,
+        url: String? = nil,
+        height: Double? = nil,
+        path: String? = nil,
+        lines: Int? = nil,
+        jobId: String? = nil,
+        cells: [StatusGridCell]? = nil,
+        gridColumns: Int? = nil,
+        sparkline: [Double]? = nil
     ) {
         self.type = type
         self.title = title
@@ -194,6 +226,29 @@ public struct DashboardWidget: Codable, Sendable, Identifiable {
         self.items = items
         self.url = url
         self.height = height
+        self.path = path
+        self.lines = lines
+        self.jobId = jobId
+        self.cells = cells
+        self.gridColumns = gridColumns
+        self.sparkline = sparkline
+    }
+}
+
+// MARK: - Status Grid Data (v2.7)
+
+/// One cell of a `status_grid` widget. Status semantics match `ListItem.status`
+/// — parsed via `ListItemStatus(raw:)` so the same vocabulary + synonyms apply.
+public struct StatusGridCell: Codable, Sendable, Identifiable, Hashable {
+    public var id: String { label }
+    public let label: String
+    public let status: String?
+    public let tooltip: String?
+
+    public init(label: String, status: String? = nil, tooltip: String? = nil) {
+        self.label = label
+        self.status = status
+        self.tooltip = tooltip
     }
 }
 
@@ -282,5 +337,49 @@ public struct ListItem: Codable, Sendable, Identifiable {
     ) {
         self.text = text
         self.status = status
+    }
+}
+
+/// Typed semantic status for `ListItem` (and `status_grid` cells in v2.7+).
+///
+/// Wire format stays a free `String?` on `ListItem` for backwards compatibility —
+/// pre-existing dashboards never break. Renderers call `ListItemStatus(raw:)`
+/// to map known values + synonyms to a canonical case; unknown values return
+/// `nil` and render as plain neutral text.
+public enum ListItemStatus: String, Sendable, Hashable, CaseIterable {
+    case success
+    case warning
+    case danger
+    case info
+    case pending
+    case done
+    case neutral
+
+    /// Lenient parse — accepts canonical names plus common synonyms seen in
+    /// real-world dashboards (`ok`/`up` → success, `down`/`error`/`failed` →
+    /// danger, `active` → info). Returns `nil` for unrecognized strings so
+    /// the renderer can fall back to plain text.
+    public init?(raw: String?) {
+        guard let raw = raw?.trimmingCharacters(in: .whitespaces).lowercased(), !raw.isEmpty else {
+            return nil
+        }
+        switch raw {
+        case "success", "ok", "up", "green", "passing":
+            self = .success
+        case "warning", "warn", "yellow", "degraded":
+            self = .warning
+        case "danger", "down", "error", "failed", "failure", "red", "critical":
+            self = .danger
+        case "info", "active", "blue":
+            self = .info
+        case "pending", "queued", "waiting", "scheduled":
+            self = .pending
+        case "done", "complete", "completed", "finished":
+            self = .done
+        case "neutral", "muted", "gray":
+            self = .neutral
+        default:
+            return nil
+        }
     }
 }

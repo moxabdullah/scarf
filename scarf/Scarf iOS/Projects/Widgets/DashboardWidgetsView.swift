@@ -102,17 +102,31 @@ struct WidgetView: View {
     }
 
     private var unsupportedView: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Label(widget.title, systemImage: "questionmark.app.dashed")
-                .font(.caption)
-                .foregroundStyle(ScarfColor.foregroundMuted)
-            Text("Widget type \"\(widget.type)\" isn't supported in this version of Scarf yet.")
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(ScarfColor.warning)
+                Text(widget.title.isEmpty ? "Widget error" : widget.title)
+                    .font(.caption)
+                    .foregroundStyle(ScarfColor.foregroundMuted)
+            }
+            Text("Unknown widget type: \"\(widget.type)\"")
+                .font(.callout)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("This Scarf build doesn't render this widget type. Update Scarf or change the widget type in dashboard.json.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .background(.quaternary.opacity(0.5))
+        .background(ScarfColor.warning.opacity(0.08))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(ScarfColor.warning.opacity(0.3), lineWidth: 1)
+        )
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }

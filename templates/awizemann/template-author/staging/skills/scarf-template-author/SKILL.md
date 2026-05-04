@@ -73,15 +73,21 @@ Map to cron expressions:
 
 ### 3. What the dashboard shows
 
-Explain the seven widget types (see Widget Catalog below) in plain English, then ask which ones feel right. Offer concrete suggestions based on the purpose:
+Explain the widget catalog (see Widget Catalog sections below) in plain English, then ask which ones feel right. Offer concrete suggestions based on the purpose:
 
-- Counting things (open PRs, failing tests, up/down sites) → `stat` widgets.
-- A list of items with status → `list` with `text` + `status` per item.
+- Counting things (open PRs, failing tests, up/down sites) → `stat` widgets. Add `sparkline: [Number]` (v2.7+) if you have a recent trend handy.
+- A list of items with status → `list` with `text` + `status` per item (≤8 items). 12+ items → use `status_grid` (v2.7+) for a denser layout.
 - Time-series data → `chart` with `line` or `bar` type.
 - Rows × columns of heterogeneous data → `table`.
 - A live URL (useful for monitoring a site) → `webview`. **Including a webview widget exposes a Site tab** next to the Dashboard tab — worth noting to the user.
+- A static image / generated chart → `image` (v2.7+; local file or remote URL).
 - A progress bar for something with a clear 0-to-N scale → `progress`.
 - Static help / markdown → `text` with `format: "markdown"`.
+- A longer markdown report the cron job writes → `markdown_file` (v2.7+; reads from a file under the project, refreshes when the cron job rewrites it).
+- The last N lines of a log/output file → `log_tail` (v2.7+).
+- The state of one Hermes cron job (last run / next run / output) → `cron_status` (v2.7+).
+
+**v2.7 file-reading widgets** (`markdown_file`, `log_tail`, `image`-with-`path`) read files relative to the project root. **By convention, write the underlying files inside `<project>/.scarf/`** (e.g. `.scarf/reports/weekly.md`, `.scarf/reports/run.log`) so the project-wide directory watch picks up changes and the widgets refresh automatically. Files outside `.scarf/` work too but only refresh when `dashboard.json` itself changes, so cron jobs writing outside `.scarf/` should `touch dashboard.json` after each run.
 
 ### 4. Configuration needs
 
@@ -145,12 +151,12 @@ Every row MUST have the same length as `columns`.
 ```json
 { "type": "list", "title": "Watched Sites",
   "items": [
-    { "text": "https://example.com", "status": "up" },
-    { "text": "https://example.org", "status": "down" }
+    { "text": "https://example.com", "status": "success" },
+    { "text": "https://example.org", "status": "danger" }
   ]
 }
 ```
-`status` values: `"up"`, `"down"`, `"pending"`, `"ok"`, `"warn"`, `"error"` — render as coloured badges.
+**Status values (typed in v2.7+):** prefer the canonical set — `"success"`, `"warning"`, `"danger"`, `"info"`, `"pending"`, `"done"`, `"neutral"`. Common synonyms also work and map to the canonical case (`"ok"`, `"up"`, `"passing"` → success; `"down"`, `"error"`, `"failed"` → danger; `"active"` → info; `"complete"`, `"finished"` → done; `"warn"`, `"degraded"` → warning). Unknown strings render as plain text rather than crashing — old dashboards using ad-hoc statuses keep working unchanged. **For new templates, prefer the canonical names** so the colors stay predictable across Scarf releases.
 
 ### `webview` — embedded live URL
 ```json
@@ -158,6 +164,65 @@ Every row MUST have the same length as `columns`.
   "url": "https://awizemann.github.io/scarf/", "height": 420 }
 ```
 **Important:** including any `webview` widget in a dashboard exposes a **Site** tab next to the Dashboard tab in the project view. Useful for templates that watch something renderable. The agent can update `url` on cron runs to keep the Site tab in sync with config (e.g., set it to `values.sites[0]`).
+
+---
+
+## Widget Catalog (v2.7+ — file-reading and richer widgets)
+
+Five new widget types landed in v2.7. They all read from disk relative to the project root, and refresh automatically when any file under `<project>/.scarf/` changes — so a cron job that writes `<project>/.scarf/reports/uptime.md` will trigger the corresponding widget to re-render. **Convention: place the underlying files inside `.scarf/` (or a subdir of it) so the directory watch picks them up.** Files outside `.scarf/` work too but only refresh when `dashboard.json` itself changes.
+
+### `markdown_file` — renders a markdown file from disk
+```json
+{ "type": "markdown_file", "title": "This Week", "path": ".scarf/reports/weekly.md" }
+```
+`path` is relative to the project root. Refuses absolute paths and `..` escape. Use this when the cron job writes a longer-form report; use `text` when the content is short and authored inline.
+
+### `log_tail` — last N lines of a file, monospaced
+```json
+{ "type": "log_tail", "title": "Last cron run", "path": ".scarf/reports/run.log", "lines": 30 }
+```
+Default `lines` is 20, capped at 200. ANSI color codes are stripped automatically. Pair with cron jobs that write atomic log snapshots (write-temp + rename) — in-place appends won't refresh until `dashboard.json` is touched.
+
+### `cron_status` — last/next run + state for one Hermes cron job
+```json
+{ "type": "cron_status", "title": "Uptime sweep", "jobId": "uptime-sweep", "lines": 5 }
+```
+`jobId` matches a `HermesCronJob.id` (visible in the Cron tab). Read-only — Run/Pause/Resume actions stay on the Cron tab; this widget only reports state. Great for dashboards that drive a single scheduled task.
+
+### `image` — local file or remote URL
+```json
+{ "type": "image", "title": "Latency p95", "path": ".scarf/reports/latency.png", "height": 200 }
+{ "type": "image", "title": "Build status", "url": "https://example.com/badge.svg" }
+```
+Either `path` (local, relative to project root) OR `url` (remote). `path` wins when both are set. Useful for chart PNGs the cron job generates with matplotlib / Plotly.
+
+### `status_grid` — compact NxM grid of colored cells
+```json
+{ "type": "status_grid", "title": "Fleet", "gridColumns": 6, "cells": [
+  { "label": "us-east-1",     "status": "success", "tooltip": "200ms p50" },
+  { "label": "us-west-2",     "status": "warning", "tooltip": "elevated latency" },
+  { "label": "eu-central-1",  "status": "danger",  "tooltip": "down" }
+]}
+```
+Reuses the typed status enum from `list`. Auto-fits columns when `gridColumns` is omitted. Denser than a `list` when monitoring 12+ services at a glance.
+
+### `stat` — sparkline (v2.7+ additive field)
+```json
+{ "type": "stat", "title": "Releases this month", "value": 4,
+  "color": "blue", "sparkline": [1, 2, 1, 3, 2, 4] }
+```
+Optional `sparkline: [Number]` renders a 1-line trend under the big number. Min 2 points, no max — tiny SVG path, cheap. Works on every existing `stat` widget without breaking older Scarf builds (they ignore the unknown field).
+
+### Choosing a widget type — quick guide
+
+- Counting things → `stat` (add `sparkline` if you have a recent trend).
+- Progress toward a target → `progress`.
+- Authored copy or short instructions → `text` (markdown).
+- A report the cron job writes to disk → `markdown_file`.
+- The most-recent run output of a cron job → `log_tail` or `cron_status`.
+- A list of services / URLs / items with health → `list` (≤8 items) or `status_grid` (12+ items).
+- Tabular data → `table` (or `chart` if it's numeric and you want trends).
+- A live website or chart from a cron-generated PNG → `webview` (browsable) or `image` (static).
 
 ## Config Schema Design
 

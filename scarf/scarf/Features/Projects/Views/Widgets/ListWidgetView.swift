@@ -19,15 +19,7 @@ struct ListWidgetView: View {
             }
             if let items = widget.items {
                 ForEach(items) { item in
-                    HStack(spacing: 6) {
-                        Image(systemName: statusIcon(item.status))
-                            .font(.caption2)
-                            .foregroundStyle(statusColor(item.status))
-                        Text(item.text)
-                            .font(.callout)
-                            .strikethrough(item.status == "done")
-                            .foregroundStyle(item.status == "done" ? .secondary : .primary)
-                    }
+                    ListItemRow(item: item)
                 }
             }
         }
@@ -36,21 +28,59 @@ struct ListWidgetView: View {
         .background(ScarfColor.backgroundSecondary)
         .clipShape(RoundedRectangle(cornerRadius: ScarfRadius.lg))
     }
+}
 
-    private func statusIcon(_ status: String?) -> String {
-        switch status {
-        case "done": return "checkmark.circle.fill"
-        case "active": return "circle.inset.filled"
-        case "pending": return "circle"
-        default: return "circle"
+/// One row of a list widget. Maps `item.status` through `ListItemStatus(raw:)`
+/// to a typed badge (icon + color). Unknown strings render as plain text with
+/// the original string preserved as a trailing badge so nothing's hidden.
+struct ListItemRow: View {
+    let item: ListItem
+
+    private var typedStatus: ListItemStatus? { ListItemStatus(raw: item.status) }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: typedStatus?.iconName ?? "circle")
+                .font(.caption2)
+                .foregroundStyle(typedStatus?.tint ?? .secondary)
+            Text(item.text)
+                .font(.callout)
+                .strikethrough(typedStatus == .done)
+                .foregroundStyle(typedStatus == .done ? .secondary : .primary)
+            if typedStatus == nil, let raw = item.status, !raw.isEmpty {
+                Text(raw)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.quaternary.opacity(0.5))
+                    .clipShape(Capsule())
+            }
+        }
+    }
+}
+
+extension ListItemStatus {
+    var iconName: String {
+        switch self {
+        case .success: return "checkmark.circle.fill"
+        case .warning: return "exclamationmark.triangle.fill"
+        case .danger:  return "xmark.octagon.fill"
+        case .info:    return "info.circle.fill"
+        case .pending: return "circle.dashed"
+        case .done:    return "checkmark.circle.fill"
+        case .neutral: return "circle"
         }
     }
 
-    private func statusColor(_ status: String?) -> Color {
-        switch status {
-        case "done": return .green
-        case "active": return .blue
-        default: return .secondary
+    var tint: Color {
+        switch self {
+        case .success, .done: return ScarfColor.success
+        case .warning:        return ScarfColor.warning
+        case .danger:         return ScarfColor.danger
+        case .info:           return ScarfColor.info
+        case .pending:        return .secondary
+        case .neutral:        return .secondary
         }
     }
 }

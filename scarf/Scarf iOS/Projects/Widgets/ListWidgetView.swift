@@ -19,15 +19,7 @@ struct ListWidgetView: View {
             }
             if let items = widget.items {
                 ForEach(items) { item in
-                    HStack(spacing: 6) {
-                        Image(systemName: statusIcon(item.status))
-                            .font(.caption2)
-                            .foregroundStyle(statusColor(item.status))
-                        Text(item.text)
-                            .font(.callout)
-                            .strikethrough(item.status == "done")
-                            .foregroundStyle(item.status == "done" ? .secondary : .primary)
-                    }
+                    ListItemRow(item: item)
                 }
             }
         }
@@ -36,21 +28,52 @@ struct ListWidgetView: View {
         .background(.quaternary.opacity(0.5))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
+}
 
-    private func statusIcon(_ status: String?) -> String {
-        switch status {
-        case "done": return "checkmark.circle.fill"
-        case "active": return "circle.inset.filled"
-        case "pending": return "circle"
-        default: return "circle"
+private struct ListItemRow: View {
+    let item: ListItem
+
+    private var typedStatus: ListItemStatus? { ListItemStatus(raw: item.status) }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: iconName)
+                .font(.caption2)
+                .foregroundStyle(tint)
+            Text(item.text)
+                .font(.callout)
+                .strikethrough(typedStatus == .done)
+                .foregroundStyle(typedStatus == .done ? .secondary : .primary)
+            if typedStatus == nil, let raw = item.status, !raw.isEmpty {
+                Text(raw)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.quaternary.opacity(0.5))
+                    .clipShape(Capsule())
+            }
         }
     }
 
-    private func statusColor(_ status: String?) -> Color {
-        switch status {
-        case "done": return .green
-        case "active": return .blue
-        default: return .secondary
+    private var iconName: String {
+        switch typedStatus {
+        case .success, .done: return "checkmark.circle.fill"
+        case .warning:        return "exclamationmark.triangle.fill"
+        case .danger:         return "xmark.octagon.fill"
+        case .info:           return "info.circle.fill"
+        case .pending:        return "circle.dashed"
+        case .neutral, nil:   return "circle"
+        }
+    }
+
+    private var tint: Color {
+        switch typedStatus {
+        case .success, .done: return ScarfColor.success
+        case .warning:        return ScarfColor.warning
+        case .danger:         return ScarfColor.danger
+        case .info:           return ScarfColor.info
+        case .pending, .neutral, nil: return .secondary
         }
     }
 }

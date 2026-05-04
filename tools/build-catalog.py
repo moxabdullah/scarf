@@ -56,7 +56,24 @@ SUPPORTED_SCHEMA_VERSIONS = {SCHEMA_VERSION_V1, SCHEMA_VERSION_V2, SCHEMA_VERSIO
 SLASH_COMMAND_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 MAX_BUNDLE_BYTES = 5 * 1024 * 1024  # 5 MB cap on submissions; installer is 50 MB
 REQUIRED_BUNDLE_FILES = ("template.json", "README.md", "AGENTS.md", "dashboard.json")
-SUPPORTED_WIDGET_TYPES = {"stat", "progress", "text", "table", "chart", "list", "webview"}
+# Widget vocabulary — loaded from tools/widget-schema.json (single source of
+# truth, also referenced by the agent-authoring SKILL.md). Each entry has
+# `required` + `optional` field name lists. Adding a widget type means
+# editing widget-schema.json + implementing the Swift view + the JS
+# renderer; this file picks up the additions automatically.
+def _load_widget_schema() -> dict:
+    schema_path = Path(__file__).resolve().parent / "widget-schema.json"
+    with schema_path.open("r", encoding="utf-8") as f:
+        schema = json.load(f)
+    if schema.get("schemaVersion") != 1:
+        raise SystemExit(f"unsupported widget-schema version: {schema.get('schemaVersion')}")
+    widgets = schema.get("widgets") or {}
+    if not isinstance(widgets, dict) or not widgets:
+        raise SystemExit("widget-schema.json: 'widgets' must be a non-empty object")
+    return widgets
+
+WIDGET_SCHEMA = _load_widget_schema()
+SUPPORTED_WIDGET_TYPES = set(WIDGET_SCHEMA.keys())
 
 # Mirror of Swift's TemplateConfigField.FieldType. Order matters only
 # for error messages that echo this set.
@@ -423,6 +440,17 @@ def _validate_dashboard(zf: zipfile.ZipFile, template_dir: Path, errors: list[Va
                     template_dir,
                     f"dashboard widget {widget.get('title')!r} has unknown type {widget_type!r}"
                 ))
+                continue
+            spec = WIDGET_SCHEMA[widget_type]
+            for required_field in spec.get("required", []):
+                if required_field == "title":
+                    continue  # validated implicitly by the title in the error message
+                if widget.get(required_field) in (None, "", []):
+                    errors.append(ValidationError(
+                        template_dir,
+                        f"dashboard widget {widget.get('title')!r} (type {widget_type!r}) "
+                        f"missing required field {required_field!r}"
+                    ))
 
 
 def _scan_for_secrets(zf: zipfile.ZipFile, template_dir: Path, errors: list[ValidationError]) -> None:

@@ -67,7 +67,7 @@ Minimum required files under `staging/`:
 
 - **`AGENTS.md`** — the cross-agent spec. Include: project layout, first-run bootstrap (if any), what each cron job expects to happen, and answers to common user prompts (`"what's the status"`, `"add a X"`, etc.).
 
-- **`dashboard.json`** — the Scarf dashboard that renders on the catalog detail page and after install. See [awizemann/site-status-checker/staging/dashboard.json](awizemann/site-status-checker/staging/dashboard.json) for the schema in action.
+- **`dashboard.json`** — the Scarf dashboard that renders on the catalog detail page and after install. See [awizemann/site-status-checker/staging/dashboard.json](awizemann/site-status-checker/staging/dashboard.json) for the schema in action. The canonical widget vocabulary lives at [`tools/widget-schema.json`](../tools/widget-schema.json) — the catalog validator reads it and every widget type must appear there. **v2.7+ adds five new widget types** (`markdown_file`, `log_tail`, `cron_status`, `image`, `status_grid`) plus a `sparkline` field on `stat` and a typed status enum on `list` items (`success` / `warning` / `danger` / `info` / `pending` / `done` / `neutral`; common synonyms like `ok` / `up` / `down` also accepted). File-reading widgets (`markdown_file`, `log_tail`, `image`-with-`path`) take a `path` field relative to the project root — by convention place the underlying files inside `.scarf/` so the project-wide directory watch refreshes them automatically.
 
 Optional:
 
