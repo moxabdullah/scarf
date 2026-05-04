@@ -42,6 +42,17 @@ public actor RemoteSQLiteBackend: HermesQueryBackend {
     /// Stashed for diagnostic logs and a future "remote sqlite3 too old"
     /// error path.
     private var sqliteVersion: String?
+    /// Resolved absolute remote `$HOME`, populated on `open()` via
+    /// `context.resolvedUserHome()` so that `~/` paths can be expanded
+    /// in Swift up front rather than relying on shell expansion across
+    /// the streamScript pipeline. The base64 + pipe path through
+    /// Citadel does not reliably propagate `$HOME` into the inner
+    /// `/bin/sh` on every host — keeping this client-side avoids the
+    /// issue (and matches how `RemoteBackupService.expandTilde` already
+    /// handles the same problem). `nil` only when the probe failed,
+    /// in which case `quoteForRemoteShell` falls back to `"$HOME/..."`
+    /// shell expansion.
+    private var resolvedHome: String?
 
     /// Per-query timeout for `query`. A healthy query is <100 ms;
     /// 15 s is 100× headroom and short enough that a wedged remote
@@ -67,6 +78,17 @@ public actor RemoteSQLiteBackend: HermesQueryBackend {
 
     public func open() async -> Bool {
         if isOpen { return true }
+        // Resolve remote $HOME once (cached process-wide via
+        // ServerContext.UserHomeCache so concurrent backends share
+        // the probe result). Lets us hand sqlite3 absolute paths and
+        // skip the unreliable nested-shell expansion altogether. A
+        // probe failure leaves `resolvedHome == nil` and falls back
+        // to "$HOME/..."-quoted args; the data-service open() will
+        // surface whatever sqlite3 errors out with.
+        let probedHome = await context.resolvedUserHome()
+        if probedHome != "~" && !probedHome.isEmpty {
+            resolvedHome = probedHome
+        }
         let dbPath = context.paths.stateDB
         // One SSH round-trip running:
         //   1. sqlite3 --version  (sanity + capture for diagnostics)
@@ -502,32 +524,44 @@ public actor RemoteSQLiteBackend: HermesQueryBackend {
     // MARK: - Quoting + error mapping
 
     /// Build the shell argument that the remote `sh -c` will see for
-    /// the SQLite path. Two cases:
+    /// the SQLite path. Three cases, in priority order:
     ///
-    /// 1. **Tilde-prefixed** (`~/.hermes/state.db`, `~`). sqlite3
-    ///    itself doesn't expand `~` — that's a shell affordance. The
-    ///    snapshot pipeline used to handle this via SSHTransport's
-    ///    `remotePathArg`, but the new streaming backend doesn't go
-    ///    through that helper. Rewrite to `"$HOME/...rest..."` and
-    ///    rely on the remote shell's $HOME expansion. Mirrors the
-    ///    pattern that fixed snapshot-mode paths in the previous
-    ///    architecture (and matches `SSHTransport.remotePathArg`).
-    /// 2. **Absolute** (`/home/agent/.hermes/state.db`). Single-quote
-    ///    + double single-quote escape, same as the simple case.
+    /// 1. **`~`-prefixed AND we have a `resolvedHome`** — the common
+    ///    case. Pre-expand to an absolute path in Swift, then single-
+    ///    quote. Sqlite3 receives a literal absolute path; no shell
+    ///    expansion needed.
+    /// 2. **`~`-prefixed AND no `resolvedHome`** (probe failed) —
+    ///    fall back to `"$HOME/..."` and hope the remote shell expands
+    ///    it. Works on Mac SSHTransport (login shell with $HOME set);
+    ///    less reliable through Citadel's exec-channel + base64 +
+    ///    inner-`/bin/sh` pipeline on iOS, which is precisely why
+    ///    we prefer the resolved-home path above.
+    /// 3. **Absolute** (`/home/agent/.hermes/state.db`) — single-quote
+    ///    with the standard sh escape for any embedded single-quote.
     ///
-    /// Without this rewrite, a default-config Digital Ocean / Hetzner
-    /// server with `paths.stateDB == "~/.hermes/state.db"` produces
-    /// `unable to open database "~/.hermes/state.db"` because sqlite3
-    /// looks for a literal directory named `~`.
+    /// sqlite3 doesn't expand `~` itself (that's a shell affordance),
+    /// so a default-config remote with `paths.stateDB ==
+    /// "~/.hermes/state.db"` would produce `unable to open database
+    /// "~/.hermes/state.db"` without one of these rewrites — issue
+    /// reported on iOS Citadel against `127.0.0.1`.
     private func quoteForRemoteShell(_ path: String) -> String {
+        if let home = resolvedHome {
+            let expanded: String
+            if path == "~" {
+                expanded = home
+            } else if path.hasPrefix("~/") {
+                expanded = home + "/" + String(path.dropFirst(2))
+            } else {
+                expanded = path
+            }
+            return "'" + expanded.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        }
+        // Probe-failed fallback: rely on remote-shell `$HOME` expansion.
         if path == "~" {
             return "\"$HOME\""
         }
         if path.hasPrefix("~/") {
             let rest = String(path.dropFirst(2))
-            // Defensively escape characters that have special meaning
-            // inside a double-quoted shell string. Hermes paths never
-            // contain these in practice but the cost is zero.
             let escaped = rest
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "\"", with: "\\\"")
@@ -535,8 +569,6 @@ public actor RemoteSQLiteBackend: HermesQueryBackend {
                 .replacingOccurrences(of: "`", with: "\\`")
             return "\"$HOME/\(escaped)\""
         }
-        // Absolute path. Single-quote with the standard sh escape for
-        // any embedded single-quote (close, escape, reopen).
         return "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
