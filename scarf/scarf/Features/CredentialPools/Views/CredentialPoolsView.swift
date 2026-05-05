@@ -6,6 +6,9 @@ struct CredentialPoolsView: View {
     @State private var viewModel: CredentialPoolsViewModel
     @State private var showAddSheet = false
     @State private var pendingRemove: HermesCredential?
+    /// Mirrors `pendingRemove` for OAuth providers — different model
+    /// type, separate confirmation. Non-nil while the dialog is up.
+    @State private var pendingOAuthRemove: HermesOAuthProvider?
     /// When non-nil, `AddCredentialSheet` opens pre-seeded with this
     /// provider name + OAuth type — driven by the chat banner's
     /// "Re-authenticate" button via `AppCoordinator.pendingOAuthReauth`,
@@ -14,6 +17,7 @@ struct CredentialPoolsView: View {
     /// "Add Credential" press doesn't accidentally inherit it.
     @State private var reauthInitialProvider: String?
     @Environment(AppCoordinator.self) private var coordinator
+    @Environment(HermesFileWatcher.self) private var fileWatcher
 
     /// Mirror of `OAuthKeepaliveCronService.isEnabled()` so the
     /// toggle reads from local @State (instant) instead of hitting
@@ -78,6 +82,17 @@ struct CredentialPoolsView: View {
         .onChange(of: coordinator.pendingOAuthReauth) { _, _ in
             consumePendingReauth()
         }
+        // Pick up external changes to auth.json — terminal
+        // `hermes auth logout`, OAuth flows from another window,
+        // OAuth keepalive cron rewriting tokens. Without this the
+        // pool only refreshes on appear / sheet-dismiss, so users
+        // who removed a provider via CLI saw stale rows after
+        // Reload (the file watcher already polls auth.json on the
+        // remote SSH path; here we just subscribe to its tick).
+        .onChange(of: fileWatcher.lastChangeDate) {
+            viewModel.load()
+            probeKeepalive()
+        }
         .sheet(isPresented: $showAddSheet, onDismiss: {
             // Refresh after every dismiss — the OAuth flow rewrites
             // `auth.json` on success, but the sheet self-closes
@@ -106,6 +121,20 @@ struct CredentialPoolsView: View {
             Button("Cancel", role: .cancel) { pendingRemove = nil }
         } message: {
             Text("This removes the credential from hermes. The upstream provider key is not revoked.")
+        }
+        .confirmationDialog(
+            pendingOAuthRemove.map { "Remove OAuth provider \($0.provider.capitalized)?" } ?? "",
+            isPresented: Binding(get: { pendingOAuthRemove != nil }, set: { if !$0 { pendingOAuthRemove = nil } })
+        ) {
+            Button("Remove", role: .destructive) {
+                if let target = pendingOAuthRemove {
+                    viewModel.removeOAuthProvider(target.provider)
+                }
+                pendingOAuthRemove = nil
+            }
+            Button("Cancel", role: .cancel) { pendingOAuthRemove = nil }
+        } message: {
+            Text("Removes this OAuth provider from auth.json. You'll need to re-authenticate before Hermes can use it again. The upstream provider account is not revoked.")
         }
     }
 
@@ -333,13 +362,21 @@ struct CredentialPoolsView: View {
                     // styled Text. Plain string preserves the backticks
                     // literally.
                     .help(Text(verbatim: "Run `hermes auth add \(provider.provider) --type oauth` again to refresh this provider's tokens."))
+                    Button(role: .destructive) {
+                        pendingOAuthRemove = provider
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .controlSize(.small)
+                    .buttonStyle(.borderless)
+                    .help(Text(verbatim: "Remove this OAuth provider from auth.json. Hermes will need to be re-authenticated to use it again."))
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
                 .background(.quaternary.opacity(0.3))
             }
             HStack {
-                Text("Click Re-authenticate to refresh tokens. Removing or rotating providers is still done via `hermes auth …` in a terminal.")
+                Text("Re-authenticate refreshes tokens; the trash icon removes the provider from auth.json.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                 Spacer()

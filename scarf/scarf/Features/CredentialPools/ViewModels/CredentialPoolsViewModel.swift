@@ -342,6 +342,34 @@ final class CredentialPoolsViewModel {
         }
     }
 
+    /// Remove an OAuth provider from `auth.json`. Maps to
+    /// `hermes auth logout <provider>` — Hermes' canonical verb for
+    /// dropping the access + refresh token entries from
+    /// `providers.<name>` while leaving the upstream account intact.
+    /// User-initiated; the credential pool view's trash button on
+    /// each OAuth row routes here after a confirmation dialog.
+    func removeOAuthProvider(_ provider: String) {
+        let result = runHermes(["auth", "logout", provider])
+        if result.exitCode == 0 {
+            message = "Removed OAuth provider \(provider)"
+            load()
+        } else {
+            // Surface the first output line in the toast so the user
+            // can tell whether the verb is missing on this Hermes
+            // version (older builds may not have `auth logout`) vs.
+            // an actual failure. `runHermes` returns combined output
+            // (stdout + stderr) in `output`; first non-empty line is
+            // the most useful tail.
+            let detail = result.output
+                .split(separator: "\n", omittingEmptySubsequences: true)
+                .first.map(String.init) ?? "exit \(result.exitCode)"
+            message = "Remove failed: \(detail)"
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            self?.message = nil
+        }
+    }
+
     func resetProvider(_ provider: String) {
         let result = runHermes(["auth", "reset", provider])
         message = result.exitCode == 0 ? "Cooldowns cleared for \(provider)" : "Reset failed"
