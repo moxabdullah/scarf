@@ -605,6 +605,60 @@ public actor HermesDataService {
         }
     }
 
+    /// Bundle for the chat sidebar / Sessions tab loaders. Folds
+    /// `fetchSessions(limit:)` + `fetchSessionPreviews(limit:)` into
+    /// one `queryBatch()` round-trip — same shape as
+    /// `dashboardSnapshot`. Pre-fix `ChatViewModel.loadRecentSessions`
+    /// + `SessionsViewModel.load` each fired the two `await
+    /// dataService.fetch*` calls in serial, paying the SSH RTT
+    /// twice (~840 ms minimum on a 420 ms-RTT remote, observed in
+    /// ScarfMon `mac.loadRecentSessions` traces). Halves the
+    /// round-trips for every sidebar load. Each tick still pays
+    /// for `dashboard.loadRegistry` separately because that's a
+    /// projects.json read (not SQL) and goes through a different
+    /// transport call.
+    public struct SessionListSnapshot: Sendable {
+        public let sessions: [HermesSession]
+        public let previews: [String: String]
+    }
+
+    public func sessionListSnapshot(limit: Int = QueryDefaults.sessionLimit) async -> SessionListSnapshot {
+        let previewLimit = limit
+        let statements: [(sql: String, params: [SQLValue])] = [
+            (
+                "SELECT \(sessionColumns) FROM sessions WHERE parent_session_id IS NULL ORDER BY started_at DESC LIMIT ?",
+                [.integer(Int64(limit))]
+            ),
+            (
+                """
+                SELECT m.session_id, substr(m.content, 1, \(QueryDefaults.previewContentLength))
+                FROM messages m
+                INNER JOIN (
+                    SELECT session_id, MIN(id) as min_id
+                    FROM messages
+                    WHERE role = 'user' AND content <> ''
+                    GROUP BY session_id
+                ) first ON m.id = first.min_id
+                ORDER BY m.timestamp DESC
+                LIMIT ?
+                """,
+                [.integer(Int64(previewLimit))]
+            )
+        ]
+        do {
+            let resultSets = try await backend.queryBatch(statements)
+            let sessions = (resultSets.first ?? []).map { sessionFromRow($0) }
+            var previews: [String: String] = [:]
+            for row in (resultSets.count > 1 ? resultSets[1] : []) {
+                previews[row.string(at: 0)] = row.string(at: 1)
+            }
+            return SessionListSnapshot(sessions: sessions, previews: previews)
+        } catch {
+            Self.logger.warning("sessionListSnapshot failed: \(error.localizedDescription, privacy: .public)")
+            return SessionListSnapshot(sessions: [], previews: [:])
+        }
+    }
+
     /// Bundle the queries Insights fires on every load into one
     /// backend round-trip — same rationale as `dashboardSnapshot`.
     public struct InsightsSnapshot: Sendable {

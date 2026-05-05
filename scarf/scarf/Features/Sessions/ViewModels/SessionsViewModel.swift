@@ -77,8 +77,13 @@ final class SessionsViewModel {
         // re-opening — cleanup() closes on disappear.
         let opened = await dataService.refresh()
         guard opened else { return }
-        sessions = await dataService.fetchSessions(limit: 500)
-        sessionPreviews = await dataService.fetchSessionPreviews(limit: 500)
+        // v2.7: folded the two serial fetches into one batched round
+        // trip via sessionListSnapshot. Pre-fix this paid the 420 ms
+        // SSH RTT twice on every Sessions tab open (~840 ms minimum
+        // for the two queries alone over remote).
+        let snapshot = await dataService.sessionListSnapshot(limit: 500)
+        sessions = snapshot.sessions
+        sessionPreviews = snapshot.previews
 
         // Load attribution + registry off the main actor in one batch so
         // 500 rows don't trigger 500 SFTP reads. Failure is silent — the

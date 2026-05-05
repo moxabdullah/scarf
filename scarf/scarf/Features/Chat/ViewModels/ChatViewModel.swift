@@ -947,8 +947,16 @@ final class ChatViewModel {
             // getting truncated out of the original limit). Sessions feature
             // loads 500; the chat sidebar doesn't need that, but 50 keeps
             // the project filter useful without measurable cost.
-            let fetchedSessions = await dataService.fetchSessions(limit: 50)
-            let fetchedPreviews = await dataService.fetchSessionPreviews(limit: 50)
+            //
+            // v2.7: folded sessions + previews into one queryBatch round
+            // trip via sessionListSnapshot. Pre-fix the two awaits below
+            // were serialized SSH calls, paying the 420 ms RTT twice
+            // every time the file watcher fired (~2.2 s baseline reload).
+            // sessionListSnapshot halves the round-trips for every
+            // sidebar refresh.
+            let snapshot = await dataService.sessionListSnapshot(limit: 50)
+            let fetchedSessions = snapshot.sessions
+            let fetchedPreviews = snapshot.previews
             await dataService.close()
 
             // Project attribution + registry — single batched off-main read.
