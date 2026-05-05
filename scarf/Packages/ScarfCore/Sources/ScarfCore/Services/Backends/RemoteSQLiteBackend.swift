@@ -54,10 +54,34 @@ public actor RemoteSQLiteBackend: HermesQueryBackend {
     /// shell expansion.
     private var resolvedHome: String?
 
-    /// Per-query timeout for `query`. A healthy query is <100 ms;
-    /// 15 s is 100× headroom and short enough that a wedged remote
-    /// doesn't hang the UI for minutes.
-    private let queryTimeout: TimeInterval = 15
+    /// In-flight query coalescing — keyed on the inlined SQL text,
+    /// value is the Task currently fetching that exact result set.
+    /// When two concurrent callers ask for the same query (common
+    /// pattern: file watcher tick + chat-finalize debounce both
+    /// firing `loadRecentSessions` within ~100 ms), the second
+    /// caller awaits the first call's task instead of spawning a
+    /// fresh SSH subprocess. Cleared on task completion. Drops
+    /// duplicate `mac.loadRecentSessions` traces observed at
+    /// t=960450 / t=960584 in the perf capture (two parallel 3-s
+    /// loads for the same data, finishing 134 ms apart).
+    ///
+    /// Coalescing is *only* applied to single `query` calls, not
+    /// `queryBatch` — batches are larger payloads with caller-
+    /// specific timeout scaling, and concurrent callers wanting
+    /// "the same batch" is rare in practice. Keep coalescing
+    /// surgical so we don't accidentally serialize independent
+    /// work that just happens to match.
+    private var inFlightQueries: [String: Task<[Row], Error>] = [:]
+
+    /// Per-query timeout for `query`. Healthy local queries are
+    /// <100 ms; remote ones over 420 ms-RTT SSH amortize one round
+    /// trip per call PLUS the wire payload time. A `fetchMessages`
+    /// over a 157-message session (~50KB JSON encoded) exceeded
+    /// the previous 15 s ceiling, silently returned 0 rows, and the
+    /// chat appeared empty — a worse failure than the wait it was
+    /// guarding against. Bumped to 30 s; the `streamScript`
+    /// transport-level timeout still fires on truly wedged hosts.
+    private let queryTimeout: TimeInterval = 30
 
     /// Preflight timeout. First SSH round-trip may include cold
     /// ControlMaster establishment (~1–3 s) plus the schema PRAGMA
@@ -149,28 +173,42 @@ public actor RemoteSQLiteBackend: HermesQueryBackend {
     // MARK: - Queries
 
     public func query(_ sql: String, params: [SQLValue]) async throws -> [Row] {
-        try await ScarfMon.measureAsync(.sqlite, "query") {
-            guard isOpen else { throw BackendError.notOpen }
-            let inlined = SQLValueInliner.inline(sql, params: params)
-            let dbPath = context.paths.stateDB
-            let script = """
-            sqlite3 -readonly -json \(quoteForRemoteShell(dbPath)) <<'__SCARF_SQL__'
-            \(inlined)
-            __SCARF_SQL__
-            """
-            let result: ProcessResult
-            do {
-                result = try await transport.streamScript(script, timeout: queryTimeout)
-            } catch {
-                throw BackendError.transport(error.localizedDescription)
-            }
-            if result.exitCode != 0 {
-                throw BackendError.sqlite(exitCode: result.exitCode, stderr: result.stderrString)
-            }
-            let rows = try parseSingleResultSet(result.stdoutString)
-            ScarfMon.event(.sqlite, "query.rows", count: rows.count, bytes: result.stdout.count)
-            return rows
+        guard isOpen else { throw BackendError.notOpen }
+        let inlined = SQLValueInliner.inline(sql, params: params)
+        // In-flight coalescing — if a query with the exact same
+        // inlined SQL is already pending, await its task instead
+        // of spawning a new SSH subprocess. Surfaces in ScarfMon as
+        // a `sqlite.query.coalesced` event so we can see how often
+        // the dedup actually fires in the wild.
+        if let existing = inFlightQueries[inlined] {
+            ScarfMon.event(.sqlite, "query.coalesced", count: 1)
+            return try await existing.value
         }
+        let task = Task<[Row], Error> { [self] in
+            try await ScarfMon.measureAsync(.sqlite, "query") {
+                let dbPath = context.paths.stateDB
+                let script = """
+                sqlite3 -readonly -json \(quoteForRemoteShell(dbPath)) <<'__SCARF_SQL__'
+                \(inlined)
+                __SCARF_SQL__
+                """
+                let result: ProcessResult
+                do {
+                    result = try await transport.streamScript(script, timeout: queryTimeout)
+                } catch {
+                    throw BackendError.transport(error.localizedDescription)
+                }
+                if result.exitCode != 0 {
+                    throw BackendError.sqlite(exitCode: result.exitCode, stderr: result.stderrString)
+                }
+                let rows = try parseSingleResultSet(result.stdoutString)
+                ScarfMon.event(.sqlite, "query.rows", count: rows.count, bytes: result.stdout.count)
+                return rows
+            }
+        }
+        inFlightQueries[inlined] = task
+        defer { inFlightQueries[inlined] = nil }
+        return try await task.value
     }
 
     public func queryBatch(_ statements: [(sql: String, params: [SQLValue])]) async throws -> [[Row]] {
