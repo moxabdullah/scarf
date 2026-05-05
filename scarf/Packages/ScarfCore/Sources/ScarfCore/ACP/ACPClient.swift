@@ -677,6 +677,37 @@ public enum ACPErrorHint {
             )
         }
 
+        // Auxiliary task references a provider that isn't authenticated.
+        // Hermes prints `resolve_provider_client: <name> requested but
+        // <Display Name> not configured` when an aux task (compression,
+        // summarization, memory_flush, curator, vision, web_extract,
+        // session_search, skills_hub) has `provider: <name>` set in
+        // config.yaml but that provider's credentials aren't loaded.
+        // Common after a user removes one OAuth provider while their
+        // existing config.yaml still names it for an aux task. The
+        // chat banner used to surface this as `-32603 Internal error`
+        // with no actionable detail; surface a clear path now.
+        if let match = haystack.range(
+            of: #"resolve_provider_client:\s*([a-zA-Z0-9_-]+)\s+requested\s+but"#,
+            options: .regularExpression
+        ) {
+            let line = String(haystack[match])
+            // Pull the captured provider name out of the matched line.
+            // First word after "resolve_provider_client:" is the value.
+            let provider: String = {
+                let parts = line.split(whereSeparator: { $0.isWhitespace })
+                if let idx = parts.firstIndex(where: { $0.contains("resolve_provider_client") }),
+                   parts.index(after: idx) < parts.endIndex {
+                    let candidate = parts[parts.index(after: idx)]
+                    return String(candidate)
+                }
+                return "an unauthenticated provider"
+            }()
+            return Classification(
+                hint: "An auxiliary task is configured to use `\(provider)` but that provider isn't authenticated. Open Settings → Aux Models, or check `~/.hermes/config.yaml` for `auxiliary.<task>.provider: \(provider)` and switch it to your active provider (or set it to `auto`)."
+            )
+        }
+
         if haystack.range(of: #"No\s+(Anthropic|OpenAI|OpenRouter|Gemini|Google|Groq|Mistral|XAI)?\s*credentials\s+found"#,
                           options: .regularExpression) != nil
             || haystack.contains("ANTHROPIC_API_KEY")

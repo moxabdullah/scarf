@@ -49,6 +49,79 @@ struct AuxiliaryTab: View {
         return t
     }
 
+    /// Aux task keys present in `config.yaml` but NOT in `tasks` —
+    /// e.g. `auxiliary.summarization.provider` from older Hermes
+    /// versions, or experimental tasks the user added by hand.
+    /// Without surfacing these, a user whose config has
+    /// `auxiliary.summarization.provider: nous` (where nous is no
+    /// longer authenticated) sees the "5 toggles all off" Aux
+    /// Models tab and concludes nothing's set — but Hermes
+    /// crashes because it's still resolving the unknown task to
+    /// a missing provider. Now those tasks render in a
+    /// fall-through "Other tasks in config.yaml" section.
+    private var unknownTasks: [String] {
+        let known = Set(tasks.map(\.key))
+        var found: Set<String> = []
+        // Scan top-level `auxiliary.<key>.<field>` keys.
+        for line in viewModel.rawConfigYAML.components(separatedBy: "\n") {
+            let stripped = line.drop(while: { $0 == " " || $0 == "\t" })
+            // YAML emits these as either nested under `auxiliary:`
+            // or as flat dot-paths depending on Hermes' dump style.
+            // We match either shape by looking for keys after
+            // `auxiliary.<key>` OR by walking nested indentation.
+            // Quickest robust approach: regex over the raw text.
+            if let m = stripped.range(of: #"^auxiliary\.([A-Za-z0-9_]+)\."#, options: .regularExpression) {
+                let frag = String(stripped[m])
+                let parts = frag.split(separator: ".")
+                if parts.count >= 2 {
+                    found.insert(String(parts[1]))
+                }
+            }
+        }
+        // Nested form: scan for `<indent>auxiliary:` then collect
+        // direct child keys.
+        let lines = viewModel.rawConfigYAML.components(separatedBy: "\n")
+        var inAuxBlock = false
+        var auxIndent = -1
+        for line in lines {
+            let trimmed = line.drop(while: { $0 == " " || $0 == "\t" })
+            let indent = line.count - trimmed.count
+            if trimmed.hasPrefix("auxiliary:") {
+                inAuxBlock = true
+                auxIndent = indent
+                continue
+            }
+            guard inAuxBlock else { continue }
+            // Out of the aux block when indent drops back to or
+            // below auxIndent on a non-empty line.
+            if !trimmed.isEmpty && indent <= auxIndent {
+                inAuxBlock = false
+                continue
+            }
+            // Direct children of `auxiliary:` are at indent
+            // > auxIndent and contain a `key:` (no further nesting
+            // dots before the colon).
+            if indent > auxIndent,
+               let colonIdx = trimmed.firstIndex(of: ":") {
+                let key = trimmed[..<colonIdx]
+                // The first deeper key under `auxiliary:` is a task
+                // name. We can't easily distinguish "task name" from
+                // "leaf field" without tracking indent more carefully,
+                // but only task names sit at indent == auxIndent + 2
+                // (or +4 with two-space indent). Add the simplest
+                // heuristic: collect any token that's plausibly a
+                // task name.
+                let candidate = String(key).trimmingCharacters(in: .whitespaces)
+                if !candidate.isEmpty
+                   && candidate.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) {
+                    found.insert(candidate)
+                }
+            }
+        }
+        let unknown = found.subtracting(known)
+        return unknown.sorted()
+    }
+
     var body: some View {
         Text("Auxiliary tasks use separate, typically cheaper models. Leave Provider as `auto` to inherit the main provider.")
             .font(.caption)
@@ -58,6 +131,46 @@ struct AuxiliaryTab: View {
         ForEach(tasks, id: \.key) { task in
             SettingsSection(title: task.title, icon: task.icon) {
                 auxRows(for: task.key)
+            }
+        }
+        // Unknown / unrecognised aux tasks present in config.yaml.
+        // Shown only when at least one such key is present so the
+        // typical user with a clean config never sees this section.
+        if !unknownTasks.isEmpty {
+            SettingsSection(title: "Other tasks in config.yaml", icon: "questionmark.folder") {
+                Text("These auxiliary tasks are present in your `config.yaml` but Scarf doesn't have a typed editor for them. The most common fix is to reset their provider to `auto` so Hermes inherits the main provider. For finer edits, use **Open in Editor** at the top of Settings.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 4)
+                ForEach(unknownTasks, id: \.self) { key in
+                    HStack(spacing: 8) {
+                        Image(systemName: "circle.dotted")
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(key)
+                                .font(.system(.body, design: .monospaced, weight: .medium))
+                            Text("Configured under `auxiliary.\(key)` in config.yaml")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        Spacer()
+                        // The single most-actionable fix: reset
+                        // provider to `auto`. Solves the v2.7
+                        // user-reported case where removing a
+                        // provider's OAuth left an aux task
+                        // pointing at the now-unauthenticated
+                        // provider, blocking session start with an
+                        // opaque ACP -32603 internal error.
+                        Button("Reset provider") {
+                            viewModel.setAuxiliary(key, field: "provider", value: "auto")
+                        }
+                        .controlSize(.small)
+                        .help(Text(verbatim: "Sets `auxiliary.\(key).provider: auto` so Hermes inherits the main provider's authentication."))
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.quaternary.opacity(0.3))
+                }
             }
         }
         Color.clear.frame(height: 0)
