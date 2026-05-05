@@ -36,10 +36,17 @@ public enum HistoryPageSize: Sendable {
     /// inside a 30-second `RemoteSQLiteBackend.queryTimeout`.** A
     /// 157-message session at 200-row page size produced enough
     /// JSON (with `reasoning_content` for thinking models) to time
-    /// out at exactly 30 s on a 420 ms-RTT remote, returning empty.
-    /// 50 rows comfortably fits that envelope. The "Load earlier"
+    /// out at exactly 30 s on a 420 ms-RTT remote. Dropped to 50,
+    /// then to 25 in v2.7 after a 160-message session still timed
+    /// out at 50 — `reasoning_content` for thinking-model turns can
+    /// run 20+ KB per row, so 50 rows × 30 KB = 1.5 MB JSON which
+    /// over a slow SSH channel still trips the 30s budget. Pair
+    /// with `messageColumnsLight` (excludes `reasoning_content`)
+    /// so the on-wire payload is small even at this size; the
+    /// inspector pane lazy-loads via `fetchReasoningContent(for:)`
+    /// when the user expands a disclosure. The "Load earlier"
     /// affordance pages back through older messages on demand.
-    public nonisolated static let initial = 50
+    public nonisolated static let initial = 25
     /// Reconnection reconcile against the DB. 200 rows is plenty —
     /// disconnects don't generate hundreds of unseen messages.
     public nonisolated static let reconcile = 200

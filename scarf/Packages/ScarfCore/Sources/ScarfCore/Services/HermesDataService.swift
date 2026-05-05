@@ -142,6 +142,31 @@ public actor HermesDataService {
         return cols
     }
 
+    /// Same as `messageColumns` but with the `reasoning_content`
+    /// column omitted. v0.11+ Hermes thinking-model output stores
+    /// the full chain-of-thought transcript in `reasoning_content`,
+    /// which on a single message can be 20+ KB of JSON. For a
+    /// 160-message session that's >1 MB of wire payload — enough
+    /// to time out a 30s SSH `sqlite3 -json` fetch on a 420ms-RTT
+    /// remote (perf capture confirmed). The bubble's main body
+    /// doesn't render reasoning_content directly; the inspector
+    /// pane does, and the user opens that on demand. So initial
+    /// fetch can skip it and a follow-up `fetchReasoningContent`
+    /// can pull it lazily when the inspector opens.
+    private var messageColumnsLight: String {
+        var cols = """
+            id, session_id, role, content, tool_call_id, tool_calls,
+            tool_name, timestamp, token_count, finish_reason
+            """
+        if hasV07Schema {
+            cols += ", reasoning"
+        }
+        // v0.11+ `reasoning_content` is intentionally excluded.
+        // `messageFromRow` defaults it to nil; callers that need it
+        // call `fetchReasoningContent(for:)` to lazy-load.
+        return cols
+    }
+
     // MARK: - Session Queries
 
     public func fetchSessions(limit: Int = QueryDefaults.sessionLimit) async -> [HermesSession] {
@@ -189,13 +214,19 @@ public actor HermesDataService {
         before: Int? = nil
     ) async -> [HermesMessage] {
         await ScarfMon.measureAsync(.sessionLoad, "mac.fetchMessages") {
+            // Use the lite column set — excludes reasoning_content which
+            // can be 20+ KB per message on thinking-model sessions and
+            // was the cause of repeated 30s SSH timeouts on 100+-message
+            // sessions over 420ms-RTT remote links. The inspector pane
+            // calls `fetchReasoningContent(for:)` to lazy-load when the
+            // user opens a message's disclosure.
             let sql: String
             let params: [SQLValue]
             if let before {
-                sql = "SELECT \(messageColumns) FROM messages WHERE session_id = ? AND id < ? ORDER BY id DESC LIMIT ?"
+                sql = "SELECT \(messageColumnsLight) FROM messages WHERE session_id = ? AND id < ? ORDER BY id DESC LIMIT ?"
                 params = [.text(sessionId), .integer(Int64(before)), .integer(Int64(limit))]
             } else {
-                sql = "SELECT \(messageColumns) FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?"
+                sql = "SELECT \(messageColumnsLight) FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?"
                 params = [.text(sessionId), .integer(Int64(limit))]
             }
             do {
@@ -208,6 +239,23 @@ public actor HermesDataService {
             } catch {
                 return []
             }
+        }
+    }
+
+    /// Lazy-load the `reasoning_content` for a single message. Called
+    /// when the user expands the inspector disclosure on a thinking-model
+    /// reply that has reasoning available (i.e. the message has v0.11
+    /// schema). Cheap on a single message — avoids the bulk-fetch
+    /// payload-size problem that motivated `messageColumnsLight`.
+    public func fetchReasoningContent(for messageId: Int) async -> String? {
+        guard hasV011Schema else { return nil }
+        let sql = "SELECT reasoning_content FROM messages WHERE id = ?"
+        do {
+            let rows = try await backend.query(sql, params: [.integer(Int64(messageId))])
+            return rows.first?.optionalString(at: 0)
+        } catch {
+            Self.logger.warning("fetchReasoningContent failed: \(error.localizedDescription, privacy: .public)")
+            return nil
         }
     }
 
