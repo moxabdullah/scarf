@@ -61,65 +61,71 @@ struct AuxiliaryTab: View {
     /// fall-through "Other tasks in config.yaml" section.
     private var unknownTasks: [String] {
         let known = Set(tasks.map(\.key))
+        let found = Self.parseAuxTaskNames(from: viewModel.rawConfigYAML)
+        return found.subtracting(known).sorted()
+    }
+
+    /// Walk the raw config.yaml for the top-level `auxiliary:` block
+    /// and collect ONLY direct-child task names (not the leaf
+    /// fields underneath them like `provider`, `model`, `api_key`).
+    /// Static + `internal` so unit tests can drive it with fixture
+    /// strings without standing up a SettingsViewModel.
+    ///
+    /// Handles both 2-space and 4-space indent styles. Tolerates
+    /// blank lines and comments. Stops collecting when indent
+    /// drops back to or below the `auxiliary:` line — same shape
+    /// the YAML parser uses to decide block boundaries.
+    static func parseAuxTaskNames(from yaml: String) -> Set<String> {
         var found: Set<String> = []
-        // Scan top-level `auxiliary.<key>.<field>` keys.
-        for line in viewModel.rawConfigYAML.components(separatedBy: "\n") {
-            let stripped = line.drop(while: { $0 == " " || $0 == "\t" })
-            // YAML emits these as either nested under `auxiliary:`
-            // or as flat dot-paths depending on Hermes' dump style.
-            // We match either shape by looking for keys after
-            // `auxiliary.<key>` OR by walking nested indentation.
-            // Quickest robust approach: regex over the raw text.
-            if let m = stripped.range(of: #"^auxiliary\.([A-Za-z0-9_]+)\."#, options: .regularExpression) {
-                let frag = String(stripped[m])
-                let parts = frag.split(separator: ".")
-                if parts.count >= 2 {
-                    found.insert(String(parts[1]))
-                }
-            }
-        }
-        // Nested form: scan for `<indent>auxiliary:` then collect
-        // direct child keys.
-        let lines = viewModel.rawConfigYAML.components(separatedBy: "\n")
         var inAuxBlock = false
         var auxIndent = -1
-        for line in lines {
+        // Indent of the first task-name line we see inside the
+        // block. Established lazily so we work with both 2- and
+        // 4-space indentation. Once locked, only collect at this
+        // exact indent — anything deeper is a leaf field.
+        var taskIndent = -1
+        for rawLine in yaml.components(separatedBy: "\n") {
+            // Strip line-trailing CRs (Windows / SSH artifacts).
+            let line = rawLine.hasSuffix("\r") ? String(rawLine.dropLast()) : rawLine
             let trimmed = line.drop(while: { $0 == " " || $0 == "\t" })
             let indent = line.count - trimmed.count
-            if trimmed.hasPrefix("auxiliary:") {
-                inAuxBlock = true
-                auxIndent = indent
-                continue
-            }
-            guard inAuxBlock else { continue }
-            // Out of the aux block when indent drops back to or
-            // below auxIndent on a non-empty line.
-            if !trimmed.isEmpty && indent <= auxIndent {
-                inAuxBlock = false
-                continue
-            }
-            // Direct children of `auxiliary:` are at indent
-            // > auxIndent and contain a `key:` (no further nesting
-            // dots before the colon).
-            if indent > auxIndent,
-               let colonIdx = trimmed.firstIndex(of: ":") {
-                let key = trimmed[..<colonIdx]
-                // The first deeper key under `auxiliary:` is a task
-                // name. We can't easily distinguish "task name" from
-                // "leaf field" without tracking indent more carefully,
-                // but only task names sit at indent == auxIndent + 2
-                // (or +4 with two-space indent). Add the simplest
-                // heuristic: collect any token that's plausibly a
-                // task name.
-                let candidate = String(key).trimmingCharacters(in: .whitespaces)
-                if !candidate.isEmpty
-                   && candidate.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) {
-                    found.insert(candidate)
+            // Skip blanks + comments without resetting state.
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            if !inAuxBlock {
+                if trimmed.hasPrefix("auxiliary:") {
+                    inAuxBlock = true
+                    auxIndent = indent
+                    taskIndent = -1
                 }
+                continue
+            }
+            // Out of the aux block when indent drops back to or
+            // below auxIndent on a non-comment / non-blank line.
+            if indent <= auxIndent {
+                inAuxBlock = false
+                taskIndent = -1
+                continue
+            }
+            // First nested line inside the block: that indent
+            // level is the task-name level for the rest of this
+            // block.
+            if taskIndent == -1 {
+                taskIndent = indent
+            }
+            // Skip leaf fields — they live at indent > taskIndent.
+            guard indent == taskIndent else { continue }
+            // The line should look like `<key>:` or `<key>: <inline>`.
+            // Match `<identifier>:` at the start to filter out
+            // things like flow-style maps `[a, b]:` that aren't
+            // task definitions.
+            guard let colonIdx = trimmed.firstIndex(of: ":") else { continue }
+            let key = trimmed[..<colonIdx].trimmingCharacters(in: .whitespaces)
+            if !key.isEmpty,
+               key.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) {
+                found.insert(key)
             }
         }
-        let unknown = found.subtracting(known)
-        return unknown.sorted()
+        return found
     }
 
     var body: some View {
