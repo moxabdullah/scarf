@@ -98,19 +98,36 @@ public struct NousModelCatalogService: Sendable {
     public func readCache() -> NousModelsCache? {
         ScarfMon.measure(.diskIO, "nous.readCache") {
             let transport = context.makeTransport()
-            guard transport.fileExists(cachePath) else { return nil }
+            // Split into separate measure points so the next perf
+            // capture localizes the 60-second observed beach ball
+            // — was it the fileExists probe, the read itself, or
+            // the JSON decode? Each on its own ScarfMon row.
+            let exists = ScarfMon.measure(.diskIO, "nous.readCache.fileExists") {
+                transport.fileExists(cachePath)
+            }
+            guard exists else { return nil }
             do {
-                let data = try transport.readFile(cachePath)
-                let decoder = JSONDecoder()
-                decoder.dateDecodingStrategy = .iso8601
-                let cache = try decoder.decode(NousModelsCache.self, from: data)
-                guard cache.version == NousModelsCache.currentVersion else {
-                    Self.logger.info("nous models cache schema mismatch (got v\(cache.version), expected v\(NousModelsCache.currentVersion)); ignoring")
-                    return nil
+                let data = try ScarfMon.measure(.diskIO, "nous.readCache.readFile") {
+                    try transport.readFile(cachePath)
                 }
-                return cache
+                ScarfMon.event(.diskIO, "nous.readCache.bytes", count: 1, bytes: data.count)
+                return ScarfMon.measure(.diskIO, "nous.readCache.decode") {
+                    let decoder = JSONDecoder()
+                    decoder.dateDecodingStrategy = .iso8601
+                    do {
+                        let cache = try decoder.decode(NousModelsCache.self, from: data)
+                        guard cache.version == NousModelsCache.currentVersion else {
+                            Self.logger.info("nous models cache schema mismatch (got v\(cache.version), expected v\(NousModelsCache.currentVersion)); ignoring")
+                            return Optional<NousModelsCache>.none
+                        }
+                        return cache
+                    } catch {
+                        Self.logger.warning("couldn't decode nous models cache: \(error.localizedDescription, privacy: .public)")
+                        return Optional<NousModelsCache>.none
+                    }
+                }
             } catch {
-                Self.logger.warning("couldn't decode nous models cache: \(error.localizedDescription, privacy: .public)")
+                Self.logger.warning("couldn't read nous models cache: \(error.localizedDescription, privacy: .public)")
                 return nil
             }
         }
