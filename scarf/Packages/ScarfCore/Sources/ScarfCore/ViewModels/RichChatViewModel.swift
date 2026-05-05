@@ -899,6 +899,24 @@ public final class RichChatViewModel {
             || !streamingThinkingText.isEmpty
             || !streamingToolCalls.isEmpty
 
+        // ScarfMon — surface turns that finalize with NO visible
+        // assistant text. Common Nous-model failure mode: model
+        // emits a few thought-stream bytes then falls silent;
+        // Hermes finalizes with empty content; the user sees a
+        // stuck "(°□°) deliberating..." placeholder bubble. The
+        // event fires for both the all-empty case (which gets
+        // removed below) and the thoughts-only case (which is
+        // kept as a permanent message with empty body) — both
+        // are user-visible failures worth tracking.
+        if streamingAssistantText.isEmpty && streamingToolCalls.isEmpty {
+            ScarfMon.event(
+                .chatStream,
+                "emptyAssistantTurn",
+                count: 1,
+                bytes: streamingThinkingText.utf8.count
+            )
+        }
+
         if hasContent {
             let id = nextLocalId
             nextLocalId -= 1
