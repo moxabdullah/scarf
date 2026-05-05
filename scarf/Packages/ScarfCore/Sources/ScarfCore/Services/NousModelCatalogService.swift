@@ -95,6 +95,33 @@ public struct NousModelCatalogService: Sendable {
     /// cache lands on the droplet, not the user's Mac). Missing or
     /// malformed cache → nil; the loader treats that as "no cache" and
     /// kicks off a fresh fetch.
+    /// Race readCache against a sleep so a hung remote `cat` doesn't
+    /// stall the picker for the full transport-level timeout (60 s).
+    /// On timeout returns nil — the caller treats that as "no usable
+    /// cache" and falls through to the network fetch.
+    public func readCacheWithTimeout(seconds: TimeInterval) async -> NousModelsCache? {
+        await withTaskGroup(of: NousModelsCache?.self) { group in
+            group.addTask { [self] in
+                // Detached because readCache is sync + does blocking
+                // SSH I/O; running on the cooperative pool is fine
+                // for one task but we don't want to fight executor
+                // scheduling with the timer task below.
+                await Task.detached { [self] in
+                    readCache()
+                }.value
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                ScarfMon.event(.diskIO, "nous.readCache.timeoutFired", count: 1)
+                return nil
+            }
+            // First completion wins; cancel the other.
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+    }
+
     public func readCache() -> NousModelsCache? {
         ScarfMon.measure(.diskIO, "nous.readCache") {
             let transport = context.makeTransport()
@@ -222,7 +249,17 @@ public struct NousModelCatalogService: Sendable {
     /// based on the case so it can show a "could not refresh" hint
     /// next to a stale-but-still-useful list.
     public func loadModels(forceRefresh: Bool = false) async -> NousModelsLoadResult {
-        let cached = readCache()
+        // Cache-read with a short timeout. The underlying SSH `cat`
+        // can hang on a corrupted or oversized cache file (a
+        // 120-second picker stall observed in the wild — two 60 s
+        // timeouts stacked from a duplicated read; perf capture
+        // localized to `nous.readCache.readFile`). Cache is a
+        // performance hint, not a correctness requirement; if it
+        // doesn't return in 5 s, fall through to the network fetch
+        // and let writeCache rebuild it. The runaway `cat` keeps
+        // running on its own 60 s transport timeout but no longer
+        // blocks the picker.
+        let cached = await readCacheWithTimeout(seconds: 5)
 
         if let cached, !forceRefresh, !isCacheStale(cached) {
             return .cache(models: cached.models, fetchedAt: cached.fetchedAt, refreshError: nil)

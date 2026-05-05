@@ -645,15 +645,19 @@ struct ModelPickerSheet: View {
     /// network — the cache write keeps the next sheet-open instant.
     private func refreshNousModels(forceRefresh: Bool) async {
         let service = NousModelCatalogService(context: serverContext)
-        // Render from cache immediately on the first pass so the user
-        // doesn't see an empty list while the network call is in
-        // flight. The async load below overwrites with fresh data
-        // when it returns.
-        if !forceRefresh, let cache = service.readCache(), !cache.models.isEmpty, nousModels.isEmpty {
-            nousModels = cache.models
-            nousFetchedAt = cache.fetchedAt
-            nousRefreshError = nil
-        }
+        // PRE-FIX (v2.7): this used to call `service.readCache()`
+        // synchronously here for instant first-paint, then call
+        // `service.loadModels(...)` which calls `readCache()` AGAIN
+        // internally — paying the SSH round-trip TWICE per picker
+        // open. On a remote with a corrupt or oversized cache file,
+        // the duplicated reads stacked two 60-second timeouts for a
+        // 120-second picker stall. ScarfMon perf capture confirmed
+        // the duplication.
+        //
+        // loadModels() already serves cache-first on its happy path
+        // (returns `.cache(...)` when fresh), so the inline readCache
+        // here is redundant. Drop it; trust loadModels' built-in
+        // cache-first behavior. One readCache call per picker open.
         nousIsRefreshing = true
         let result = await service.loadModels(forceRefresh: forceRefresh)
         nousIsRefreshing = false
