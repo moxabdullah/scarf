@@ -13,6 +13,13 @@ struct SettingsView: View {
     @State private var vm: IOSSettingsViewModel
     @State private var showRawYAML = false
     @State private var editingSpec: SettingSpec?
+    /// v2.7 — Scarf-local opt-in to bulk-fetch tool result CONTENT
+    /// when resuming past chats. Default off; the shared
+    /// `RichChatViewModel` reads this same UserDefaults key on
+    /// every chat resume so iOS gets the same skeleton-then-hydrate
+    /// behavior as Mac.
+    @AppStorage(RichChatViewModel.loadHistoricalToolResultsKey)
+    private var loadHistoricalToolResults: Bool = false
 
     private static let sharedContextID: ServerID = ServerID(
         uuidString: "00000000-0000-0000-0000-0000000000A1"
@@ -163,6 +170,28 @@ struct SettingsView: View {
             yesNoRow("Compact", vm.config.display.compact)
             yesNoRow("Inline diffs", vm.config.display.inlineDiffs)
             LabeledContent("Personality", value: vm.config.personality)
+        }
+        chatScarfSection
+    }
+
+    /// v2.7 — Scarf-local chat preferences. Mirrors the Mac Settings
+    /// → Display → "Load tool results in past chats" toggle. Lives in
+    /// its own section so it's clear these are app-side settings, not
+    /// Hermes config values.
+    @ViewBuilder
+    private var chatScarfSection: some View {
+        Section {
+            Toggle(isOn: $loadHistoricalToolResults) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Load tool results in past chats")
+                        .font(.body)
+                    Text("Off (default) keeps past chat resumes fast on slow remotes — tool call cards still render, but the inspector lazy-loads each result when you open it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } header: {
+            Text("Chat (Scarf)")
         }
     }
 

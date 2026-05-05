@@ -412,6 +412,16 @@ struct ChatView: View {
                     tint: ScarfColor.info,
                     showSpinner: true
                 )
+            } else if controller.vm.isHydratingTools {
+                // v2.7 — Phase 2 tool-call hydration is in flight.
+                // Bare conversation skeleton is already on screen;
+                // this banner tells the user the tool cards are
+                // about to fill in.
+                connectionBannerStrip(
+                    text: "Loading tool details…",
+                    tint: ScarfColor.info,
+                    showSpinner: true
+                )
             } else {
                 EmptyView()
             }

@@ -96,15 +96,24 @@ public final class IOSMemoryViewModel {
         // Run the file read on a detached task — `readTextThrowing`
         // blocks on transport I/O, and we don't want the MainActor
         // hanging during a remote SFTP fetch.
+        // v2.7 — instrumented for parity with Mac `memory.load`.
+        // iOS path is one SFTP read per Memory tab open (per kind:
+        // memory / user / soul); the bytes counter shows payload
+        // size alongside latency.
         let ctx = context
         let path = kind.path(on: context)
-        let result: Result<String?, Error> = await Task.detached {
-            do {
-                return .success(try ctx.readTextThrowing(path))
-            } catch {
-                return .failure(error)
-            }
-        }.value
+        let result: Result<String?, Error> = await ScarfMon.measureAsync(.diskIO, "ios.memory.load") {
+            await Task.detached {
+                do {
+                    return Result<String?, Error>.success(try ctx.readTextThrowing(path))
+                } catch {
+                    return Result<String?, Error>.failure(error)
+                }
+            }.value
+        }
+        if case .success(.some(let loaded)) = result {
+            ScarfMon.event(.diskIO, "ios.memory.load.bytes", count: 0, bytes: loaded.utf8.count)
+        }
 
         switch result {
         case .success(.some(let loaded)):

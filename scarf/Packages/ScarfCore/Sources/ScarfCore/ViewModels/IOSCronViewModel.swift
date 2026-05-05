@@ -29,17 +29,24 @@ public final class IOSCronViewModel {
         let ctx = context
         let path = ctx.paths.cronJobsJSON
 
-        let result: Result<CronJobsFile, Error> = await Task.detached {
-            do {
-                guard let data = ctx.readData(path) else {
-                    throw LoadError.missingFile(path: path)
+        // v2.7 — instrumented for parity with Mac `cron.load`. iOS
+        // Cron load is a single SFTP read of jobs.json so should be
+        // snappy on most remotes; this measure point makes the cost
+        // visible in ScarfMon traces alongside the rest of the iOS
+        // load paths.
+        let result: Result<CronJobsFile, Error> = await ScarfMon.measureAsync(.diskIO, "ios.cron.load") {
+            await Task.detached {
+                do {
+                    guard let data = ctx.readData(path) else {
+                        throw LoadError.missingFile(path: path)
+                    }
+                    let decoded = try JSONDecoder().decode(CronJobsFile.self, from: data)
+                    return .success(decoded)
+                } catch {
+                    return Result<CronJobsFile, Error>.failure(error)
                 }
-                let decoded = try JSONDecoder().decode(CronJobsFile.self, from: data)
-                return .success(decoded)
-            } catch {
-                return .failure(error)
-            }
-        }.value
+            }.value
+        }
 
         switch result {
         case .success(let file):
