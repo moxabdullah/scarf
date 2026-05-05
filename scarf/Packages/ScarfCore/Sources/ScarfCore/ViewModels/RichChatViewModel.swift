@@ -1019,6 +1019,18 @@ public final class RichChatViewModel {
     public func loadSessionHistory(sessionId: String, acpSessionId: String? = nil) async {
         await ScarfMon.measureAsync(.sessionLoad, "mac.hydrateMessages") {
         self.sessionId = sessionId
+        // Capture the session-id we're loading FOR so we can verify
+        // it's still the active one before assigning to `messages`.
+        // Without this guard, switching to a small chat while a
+        // larger one is mid-fetch can result in last-write-wins:
+        // the slow fetch finishes after the small chat's, drops
+        // the user back into the big chat's transcript, and the
+        // user has to reselect the small one. Observed in remote
+        // perf captures (parallel fetchMessages calls, one timing
+        // out at 30s for a 157-message session, the other 2-message
+        // chat completing in 425ms; the 30s one's assignment
+        // overwrote the small chat).
+        let loadingForSession = sessionId
         // Force a fresh snapshot pull on remote contexts. An earlier open()
         // would have cached a stale copy — on resume we need whatever
         // Hermes has actually persisted since then, or the resumed session
@@ -1028,9 +1040,21 @@ public final class RichChatViewModel {
         // messages the agent streamed during the user's offline window.
         let opened = await dataService.refresh(forceFresh: true)
         guard opened else { return }
+        // Race-check #1: session id may have changed during refresh.
+        guard self.sessionId == loadingForSession else {
+            ScarfMon.event(.sessionLoad, "mac.hydrateMessages.dropped", count: 1)
+            return
+        }
 
         let pageSize = HistoryPageSize.initial
         var allMessages = await dataService.fetchMessages(sessionId: sessionId, limit: pageSize)
+        // Race-check #2: session id may have changed during the
+        // long fetch (the most common race — a 30s timeout on a
+        // big session lets the user switch to a small one and back).
+        guard self.sessionId == loadingForSession else {
+            ScarfMon.event(.sessionLoad, "mac.hydrateMessages.dropped", count: 1)
+            return
+        }
         // The DB has more on-disk history when the initial fetch
         // saturated the limit. The "Load earlier" affordance reads
         // this flag.
@@ -1043,6 +1067,11 @@ public final class RichChatViewModel {
             originSessionId = sessionId
             self.sessionId = acpId
             let acpMessages = await dataService.fetchMessages(sessionId: acpId, limit: pageSize)
+            // Race-check #3: same guard, after the second fetch.
+            guard self.sessionId == acpId else {
+                ScarfMon.event(.sessionLoad, "mac.hydrateMessages.dropped", count: 1)
+                return
+            }
             if !acpMessages.isEmpty {
                 allMessages.append(contentsOf: acpMessages)
                 allMessages.sort { ($0.timestamp ?? .distantPast) < ($1.timestamp ?? .distantPast) }

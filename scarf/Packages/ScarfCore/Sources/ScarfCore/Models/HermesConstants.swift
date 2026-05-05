@@ -32,10 +32,14 @@ public enum QueryDefaults: Sendable {
 /// consistent budget — and so we have one knob to retune if perf
 /// concerns shift.
 public enum HistoryPageSize: Sendable {
-    /// Initial chat-history load: covers the vast majority of
-    /// sessions in one fetch while keeping the snapshot read bounded
-    /// for the rare 1000+-message session.
-    public nonisolated static let initial = 200
+    /// Initial chat-history load. **Sized to fit the SSH wire payload
+    /// inside a 30-second `RemoteSQLiteBackend.queryTimeout`.** A
+    /// 157-message session at 200-row page size produced enough
+    /// JSON (with `reasoning_content` for thinking models) to time
+    /// out at exactly 30 s on a 420 ms-RTT remote, returning empty.
+    /// 50 rows comfortably fits that envelope. The "Load earlier"
+    /// affordance pages back through older messages on demand.
+    public nonisolated static let initial = 50
     /// Reconnection reconcile against the DB. 200 rows is plenty —
     /// disconnects don't generate hundreds of unseen messages.
     public nonisolated static let reconcile = 200
