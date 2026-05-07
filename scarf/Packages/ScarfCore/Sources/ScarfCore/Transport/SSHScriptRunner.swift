@@ -49,6 +49,34 @@ public enum SSHScriptRunner {
         }
     }
 
+    /// Lock-protected `Data` accumulator used by the stdout/stderr
+    /// readability handlers below. Two of these per script run, one per
+    /// stream. `@unchecked Sendable` because mutation goes through the
+    /// `NSLock` — Swift can't see that.
+    ///
+    /// Why this exists (issue #77): the previous implementation read
+    /// stdout/stderr via `readToEnd()` *after* the subprocess exited.
+    /// On macOS pipes default to a 16–64 KB kernel buffer; once
+    /// `sqlite3 -json` writes more than that, the SSH client back-
+    /// pressures over the wire, the remote sqlite3 blocks, the script
+    /// never finishes, the 30 s timeout fires, and the caller sees
+    /// "Script timed out" + an empty result set. v2.7's
+    /// `sessionListSnapshot(limit: 500)` crossed that threshold for
+    /// any user with ~150+ sessions. Draining concurrently with
+    /// `readabilityHandler` removes the back-pressure.
+    private final class LockedData: @unchecked Sendable {
+        private let lock = NSLock()
+        private var buf = Data()
+        func append(_ chunk: Data) {
+            lock.lock(); defer { lock.unlock() }
+            buf.append(chunk)
+        }
+        func snapshot() -> Data {
+            lock.lock(); defer { lock.unlock() }
+            return buf
+        }
+    }
+
     public enum Outcome: Sendable {
         /// Couldn't even reach the remote (process spawn failed,
         /// timeout before any output, network refused). Carries the
@@ -151,9 +179,35 @@ public enum SSHScriptRunner {
             proc.standardOutput = stdoutPipe
             proc.standardError = stderrPipe
 
+            // Drain stdout/stderr concurrently with the running process —
+            // see the LockedData docstring above for the issue-#77
+            // back-story. Without these handlers a >64 KB script output
+            // wedges the pipe + ssh + remote sqlite3 chain and the only
+            // visible symptom is a timeout.
+            let outBuf = LockedData()
+            let errBuf = LockedData()
+            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                if chunk.isEmpty {
+                    handle.readabilityHandler = nil
+                } else {
+                    outBuf.append(chunk)
+                }
+            }
+            stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                if chunk.isEmpty {
+                    handle.readabilityHandler = nil
+                } else {
+                    errBuf.append(chunk)
+                }
+            }
+
             do {
                 try proc.run()
             } catch {
+                stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
                 return .connectFailure("Failed to launch ssh: \(error.localizedDescription)")
             }
 
@@ -172,6 +226,8 @@ public enum SSHScriptRunner {
                 // belt-and-suspenders.
                 if cancelFlag.isCancelled || Task.isCancelled {
                     proc.terminate()
+                    stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                    stderrPipe.fileHandleForReading.readabilityHandler = nil
                     try? stdoutPipe.fileHandleForReading.close()
                     try? stderrPipe.fileHandleForReading.close()
                     return .connectFailure("Script cancelled")
@@ -180,6 +236,8 @@ public enum SSHScriptRunner {
             }
             if proc.isRunning {
                 proc.terminate()
+                stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
                 // Pipe fds leak otherwise — closing on the timeout branch
                 // matches the success-path discipline (see CLAUDE.md
                 // "Always close both fileHandleForReading and
@@ -188,8 +246,14 @@ public enum SSHScriptRunner {
                 try? stderrPipe.fileHandleForReading.close()
                 return .connectFailure("Script timed out after \(Int(timeout))s")
             }
-            let out = (try? stdoutPipe.fileHandleForReading.readToEnd()) ?? Data()
-            let err = (try? stderrPipe.fileHandleForReading.readToEnd()) ?? Data()
+            // Detach the readabilityHandlers and capture whatever the
+            // accumulator has. The handler may have already seen EOF
+            // (`chunk.isEmpty`) and self-cleared, but assigning nil is
+            // idempotent and guards against a late tick from the queue.
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            let out = outBuf.snapshot()
+            let err = errBuf.snapshot()
             // Best-effort fd close — Pipe leaks fd's otherwise.
             try? stdoutPipe.fileHandleForReading.close()
             try? stderrPipe.fileHandleForReading.close()
@@ -213,15 +277,43 @@ public enum SSHScriptRunner {
             let stderrPipe = Pipe()
             proc.standardOutput = stdoutPipe
             proc.standardError = stderrPipe
+
+            // Drain concurrently — same pipe-buffer fix as runOverSSH.
+            // Local scripts can also blow past the 16–64 KB pipe buffer
+            // (e.g. local `sqlite3 -json` over a fat result set) and
+            // would wedge in exactly the same way.
+            let outBuf = LockedData()
+            let errBuf = LockedData()
+            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                if chunk.isEmpty {
+                    handle.readabilityHandler = nil
+                } else {
+                    outBuf.append(chunk)
+                }
+            }
+            stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                if chunk.isEmpty {
+                    handle.readabilityHandler = nil
+                } else {
+                    errBuf.append(chunk)
+                }
+            }
+
             do {
                 try proc.run()
             } catch {
+                stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
                 return .connectFailure("Failed to launch /bin/sh: \(error.localizedDescription)")
             }
             let deadline = Date().addingTimeInterval(timeout)
             while proc.isRunning && Date() < deadline {
                 if cancelFlag.isCancelled || Task.isCancelled {
                     proc.terminate()
+                    stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                    stderrPipe.fileHandleForReading.readabilityHandler = nil
                     try? stdoutPipe.fileHandleForReading.close()
                     try? stderrPipe.fileHandleForReading.close()
                     return .connectFailure("Script cancelled")
@@ -230,12 +322,16 @@ public enum SSHScriptRunner {
             }
             if proc.isRunning {
                 proc.terminate()
+                stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
                 try? stdoutPipe.fileHandleForReading.close()
                 try? stderrPipe.fileHandleForReading.close()
                 return .connectFailure("Script timed out after \(Int(timeout))s")
             }
-            let out = (try? stdoutPipe.fileHandleForReading.readToEnd()) ?? Data()
-            let err = (try? stderrPipe.fileHandleForReading.readToEnd()) ?? Data()
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            let out = outBuf.snapshot()
+            let err = errBuf.snapshot()
             try? stdoutPipe.fileHandleForReading.close()
             try? stderrPipe.fileHandleForReading.close()
             return .completed(
