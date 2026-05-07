@@ -133,12 +133,20 @@ public struct SkillSnapshotDiff: Sendable, Equatable {
     }
 
     /// Compact label for the "What's New" pill, e.g.
-    /// "2 new, 4 updated since you last looked" or "1 new skill".
+    /// "2 new, 4 changed since you last looked" or "1 new skill".
+    ///
+    /// Wording note (issue #78): we used to say "X updated since you
+    /// last looked" but the same screen also surfaces an "Updates"
+    /// sub-tab driven by `hermes skills check` (skills with newer
+    /// **upstream** versions available). Two surfaces with the word
+    /// "update" meaning two different things read as a contradiction
+    /// to the user. "Changed" describes the local file delta without
+    /// colliding with upstream-update vocabulary.
     public var label: String {
         switch (newCount, updatedCount) {
         case (let n, 0): return n == 1 ? "1 new skill since you last looked" : "\(n) new skills since you last looked"
-        case (0, let u): return u == 1 ? "1 updated skill since you last looked" : "\(u) updated skills since you last looked"
-        default: return "\(newCount) new, \(updatedCount) updated since you last looked"
+        case (0, let u): return u == 1 ? "1 changed skill since you last looked" : "\(u) changed skills since you last looked"
+        default: return "\(newCount) new, \(updatedCount) changed since you last looked"
         }
     }
 }

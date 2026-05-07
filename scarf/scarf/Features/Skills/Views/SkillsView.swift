@@ -71,7 +71,14 @@ struct SkillsView: View {
             // changes against a non-empty prior snapshot (first launch
             // is silent so users aren't drowned in "everything is
             // new!" noise).
-            if let diff = snapshotDiff,
+            //
+            // Issue #78: keep the pill scoped to the Installed tab.
+            // It describes local file deltas in the installed-skill
+            // tree; surfacing it above the Hub or Updates tab read as
+            // a contradiction with the Updates body's separate
+            // upstream-version check.
+            if currentTab == .installed,
+               let diff = snapshotDiff,
                diff.hasChanges,
                !diff.previousSnapshotEmpty {
                 whatsNewPill(diff: diff)

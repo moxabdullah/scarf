@@ -48,7 +48,12 @@ struct SkillsView: View {
             // picker when the per-server snapshot diff has changes.
             // First-load with no prior snapshot silently primes (no
             // pill, the snapshot just records what's there).
-            if let diff = snapshotDiff,
+            //
+            // Issue #78: scope the pill to the Installed tab. It
+            // describes local file deltas; rendering it on Updates
+            // contradicts the upstream-version-check pane below.
+            if currentTab == .installed,
+               let diff = snapshotDiff,
                diff.hasChanges,
                !diff.previousSnapshotEmpty {
                 whatsNewPill(diff: diff)
