@@ -8,6 +8,8 @@ Thanks for your interest in contributing to Scarf.
 2. Open `scarf/scarf.xcodeproj` in Xcode 26.3+
 3. Build and run (requires macOS 26.2+ and Hermes installed at `~/.hermes/`)
 
+For an unsigned command-line Debug build without an Apple Developer account, run [`./scripts/local-build.sh`](scripts/local-build.sh). See [BUILDING.md](BUILDING.md) for prerequisites.
+
 ## Architecture
 
 Scarf uses the MVVM-Feature pattern. Each feature is a self-contained module under `Features/`:

@@ -238,6 +238,8 @@ Or from the command line:
 xcodebuild -project scarf/scarf.xcodeproj -scheme scarf -configuration Release -arch arm64 -arch x86_64 ONLY_ACTIVE_ARCH=NO build
 ```
 
+For an unsigned local Debug build without an Apple Developer account (handy for contributors), use [`./scripts/local-build.sh`](scripts/local-build.sh) — see [BUILDING.md](BUILDING.md) for prerequisites.
+
 ## Architecture
 
 Scarf follows the **MVVM-Feature** pattern with zero external dependencies beyond SwiftTerm:
