@@ -53,6 +53,49 @@ import Foundation
     // tokenized the sentinel and emitted `(no` as a profile name,
     // which surfaced in the Mac inspector's assignee dropdown.
 
+    // MARK: - LocalTransport subprocess environment
+
+    @Test func localTransportSubprocessEnvIncludesExecutableDir() {
+        // GUI-launched Scarf would otherwise hand subprocesses
+        // `/usr/bin:/bin:/usr/sbin:/sbin`, which doesn't include
+        // `~/.local/bin` — so when Hermes's kanban dispatcher
+        // spawns a worker by bare name, it fails with
+        // `executable not found on PATH` and the run records
+        // `outcome=spawn_failed`. Unblock by always making sure
+        // the directory of the executable we're launching is on
+        // PATH for the child.
+        let previous = LocalTransport.environmentEnricher
+        defer { LocalTransport.environmentEnricher = previous }
+        LocalTransport.environmentEnricher = nil
+
+        let env = LocalTransport.subprocessEnvironment(
+            forExecutable: "/Users/alanwizemann/.local/bin/hermes"
+        )
+        let path = env["PATH"] ?? ""
+        #expect(path.contains("/Users/alanwizemann/.local/bin"))
+    }
+
+    @Test func localTransportSubprocessEnvLetsEnricherWinPATH() {
+        let previous = LocalTransport.environmentEnricher
+        defer { LocalTransport.environmentEnricher = previous }
+        LocalTransport.environmentEnricher = {
+            // Simulate a login-shell probe returning a fuller PATH +
+            // some credential env. The enricher's PATH must override
+            // the GUI-process PATH.
+            return [
+                "PATH": "/opt/homebrew/bin:/usr/local/bin:/Users/me/.local/bin",
+                "ANTHROPIC_API_KEY": "sk-test-fake"
+            ]
+        }
+        let env = LocalTransport.subprocessEnvironment(
+            forExecutable: "/usr/local/bin/hermes"
+        )
+        // Enricher's PATH wins (PATH is the whole point of running it).
+        #expect(env["PATH"]?.contains("/opt/homebrew/bin") == true)
+        // Credential env is forwarded (process env didn't have it).
+        #expect(env["ANTHROPIC_API_KEY"] == "sk-test-fake")
+    }
+
     @Test func parseAssigneeTableSkipsNoAssigneesSentinel() {
         // Use the same parser via its public stand-in: round-trip
         // through a fixture that decodes via JSON would skip the

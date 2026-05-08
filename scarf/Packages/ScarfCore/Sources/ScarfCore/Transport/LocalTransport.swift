@@ -25,6 +25,63 @@ public struct LocalTransport: ServerTransport {
         self.contextID = contextID
     }
 
+    // MARK: - Environment enrichment
+
+    /// Injection point for local-subprocess environment enrichment.
+    /// Mirrors `SSHTransport.environmentEnricher` — the Mac app wires
+    /// this at launch to `HermesFileService.enrichedEnvironment()`,
+    /// which probes the user's login shell for PATH + credential env
+    /// vars. Without it, GUI-launched Scarf hands subprocesses a
+    /// stripped `/usr/bin:/bin:/usr/sbin:/sbin` PATH and child
+    /// `hermes` invocations from inside spawned workers fail with
+    /// `executable not found on PATH`.
+    ///
+    /// Set once at app launch (startup is single-threaded). Tests may
+    /// inject a stub. iOS leaves this `nil` because LocalTransport
+    /// doesn't run subprocesses there.
+    nonisolated(unsafe) public static var environmentEnricher: (@Sendable () -> [String: String])?
+
+    /// Build the environment dict for a single subprocess. Process
+    /// env wins for keys it has; the enricher fills gaps + always
+    /// owns PATH (which is the whole point of running it). The
+    /// executable's parent directory is appended as a final fallback
+    /// so `runProcess` works even before the enricher has been wired
+    /// (during very early startup, in tests, etc.).
+    nonisolated static func subprocessEnvironment(forExecutable executable: String) -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        if let enricher = Self.environmentEnricher {
+            let extra = enricher()
+            for (key, value) in extra where !value.isEmpty {
+                if key == "PATH" {
+                    // Enricher always wins for PATH — that's the
+                    // whole reason the enricher exists. The GUI
+                    // process PATH is the broken thing we're
+                    // replacing.
+                    env[key] = value
+                } else if (env[key] ?? "").isEmpty {
+                    // For other keys (credential env, locale, etc.)
+                    // an explicit non-empty value in the GUI
+                    // environment wins; an empty or absent value
+                    // gets filled by the shell-harvested copy.
+                    env[key] = value
+                }
+            }
+        }
+        // Always make sure the executable's own directory is on PATH —
+        // covers the case where the enricher hasn't been wired (tests,
+        // pre-launch helpers) but a child process still tries to spawn
+        // its sibling tools by bare name.
+        let dir = (executable as NSString).deletingLastPathComponent
+        if !dir.isEmpty {
+            let currentPATH = env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+            let parts = currentPATH.split(separator: ":").map(String.init)
+            if !parts.contains(dir) {
+                env["PATH"] = "\(dir):\(currentPATH)"
+            }
+        }
+        return env
+    }
+
     // MARK: - Files
 
     public func readFile(_ path: String) throws -> Data {
@@ -116,6 +173,17 @@ public struct LocalTransport: ServerTransport {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: executable)
         proc.arguments = args
+        // Hand subprocesses an environment that includes the user's
+        // login-shell PATH. Without this, `hermes` (pipx-installed at
+        // `~/.local/bin/hermes`) ends up running with macOS's GUI
+        // launch-services PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), and
+        // when Hermes itself shells out to spawn a worker (e.g. the
+        // kanban dispatcher invoking `hermes` by name from a Python
+        // subprocess), it returns "executable not found on PATH" and
+        // the run records `outcome=spawn_failed`. Mirrors the SSH
+        // transport's environmentEnricher hook and is wired by
+        // `scarfApp.swift` at launch.
+        proc.environment = Self.subprocessEnvironment(forExecutable: executable)
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         let stdinPipe = Pipe()

@@ -56,6 +56,17 @@ struct ScarfApp: App {
         // owns the agent there.
         SSHTransport.environmentEnricher = { HermesFileService.enrichedEnvironment() }
 
+        // Same enrichment for LocalTransport. Without this, GUI-launched
+        // Scarf hands every local subprocess (hermes acp, hermes kanban
+        // dispatch, sqlite3, etc.) macOS's stripped launch-services PATH
+        // — `/usr/bin:/bin:/usr/sbin:/sbin` — and child invocations
+        // (notably the kanban dispatcher's `hermes` worker spawn) fail
+        // with `executable not found on PATH`, recording an
+        // `outcome=spawn_failed` run on the task. The login-shell probe
+        // populates PATH with `~/.local/bin`, Homebrew, etc., matching
+        // what a Terminal session sees.
+        LocalTransport.environmentEnricher = { HermesFileService.enrichedEnvironment() }
+
         // Warm up the login-shell env probe off-main at launch. Without
         // this, the first MainActor caller (chat preflight, OAuth flow,
         // signal-cli detect, etc.) blocks for 5-8 seconds while
