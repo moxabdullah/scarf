@@ -361,6 +361,12 @@ public final class RichChatViewModel {
                 description: "Show available commands",
                 argumentHint: nil,
                 source: .alwaysAvailable
+            ),
+            HermesSlashCommand(
+                name: "exit",
+                description: "End the current session",
+                argumentHint: nil,
+                source: .alwaysAvailable
             )
         ])
         return result
@@ -710,8 +716,8 @@ public final class RichChatViewModel {
         // `session/new`); they don't change when the user switches
         // sessions. Hermes does not re-emit on `session/load`, so if
         // we wipe here, resumed sessions land at a 4-command fallback
-        // until the user starts a fresh session — exactly the dogfood
-        // bug surfaced during v2.8.0 testing. The caller paths
+        // until the user starts a fresh session — observed during
+        // dogfooding against a Hermes v0.13 host. The caller paths
         // (startNewSession, resumeSession, continueLastSession) all
         // spawn a fresh ACP subprocess; if that subprocess emits a
         // fresh list, our value is replaced; if it doesn't, we keep
@@ -719,7 +725,7 @@ public final class RichChatViewModel {
         // accurate as long as the agent identity hasn't changed. The
         // host-switch case (Local → SSH) tears down the whole
         // ContextBoundRoot so this stale carry-over isn't reachable
-        // there. See WS-2 / v2.8.0 dogfood report.
+        // there.
         projectScopedCommands = []
         currentTurnStart = nil
         turnDurations = [:]

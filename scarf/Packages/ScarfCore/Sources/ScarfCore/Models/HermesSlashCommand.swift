@@ -30,7 +30,7 @@ public struct HermesSlashCommand: Identifiable, Sendable, Equatable {
         /// menu offer discoverable affordances like `/new` even before
         /// the user has opened a session. Once a session starts, the
         /// ACP-advertised version takes over (deduped by name in
-        /// `availableCommands`). Added v2.8 alongside Hermes v0.13.
+        /// `availableCommands`). Introduced alongside Hermes v0.13.
         case alwaysAvailable
     }
 
