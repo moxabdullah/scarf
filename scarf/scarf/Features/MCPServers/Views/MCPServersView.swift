@@ -132,6 +132,14 @@ struct MCPServersView: View {
                     }
                 }
             }
+            if !viewModel.sseServers.isEmpty {
+                Section("Remote (SSE)") {
+                    ForEach(viewModel.sseServers) { server in
+                        serverRow(server)
+                            .tag(server.name as String?)
+                    }
+                }
+            }
             if viewModel.servers.isEmpty && !viewModel.isLoading {
                 Section {
                     Text("No servers configured yet")

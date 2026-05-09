@@ -310,6 +310,74 @@ import Foundation
         }
     }
 
+    // MARK: - ModelCatalogService — WS-6 (v0.13)
+
+    @Test func vercelAIGatewayDemotedToBottom() throws {
+        // Build a minimal catalog with vercel + alphabetically-later
+        // providers, then assert vercel sorts after them. Locks the
+        // demoted-axis sort comparator added in WS-6.
+        let json = """
+        {
+          "anthropic": { "name": "Anthropic", "models": {} },
+          "vercel":    { "name": "Vercel AI Gateway", "models": {} },
+          "zonk":      { "name": "Zonk Provider", "models": {} }
+        }
+        """
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scarf-models-\(UUID().uuidString).json")
+        try json.write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let svc = ModelCatalogService(path: tmp.path)
+        let providers = svc.loadProviders().filter { !$0.isOverlay }
+        let names = providers.map(\.providerName)
+        // anthropic first (alpha), zonk next (alpha), vercel last
+        // (demoted) — even though `vercel` < `zonk` alphabetically.
+        #expect(names.last == "Vercel AI Gateway")
+        let vercelIdx = names.firstIndex(of: "Vercel AI Gateway") ?? -1
+        let zonkIdx = names.firstIndex(of: "Zonk Provider") ?? -1
+        #expect(vercelIdx > zonkIdx)
+    }
+
+    @Test func grok420BetaAliasResolvesToGrok420() {
+        let svc = ModelCatalogService(path: "/tmp/scarf-nonexistent-\(UUID().uuidString).json")
+        // OpenRouter's old `-beta` ID resolves to the GA name.
+        #expect(svc.resolveModelAlias(providerID: "openrouter", modelID: "x-ai/grok-4.20-beta")
+                == "x-ai/grok-4.20")
+        // xAI direct provider keeps the same shape minus prefix.
+        #expect(svc.resolveModelAlias(providerID: "xai", modelID: "grok-4.20-beta")
+                == "grok-4.20")
+        // Non-aliased ID passes through unchanged.
+        #expect(svc.resolveModelAlias(providerID: "anthropic", modelID: "claude-4.7-opus")
+                == "claude-4.7-opus")
+        // Cross-provider isolation: same modelID on a different
+        // provider isn't aliased — composite key in `modelAliases`
+        // disambiguates by providerID.
+        #expect(svc.resolveModelAlias(providerID: "fictional", modelID: "x-ai/grok-4.20-beta")
+                == "x-ai/grok-4.20-beta")
+    }
+
+    @Test func imageGenModelAllowlistShape() {
+        // Lock the curated list size + a few sentinel entries so
+        // unintentional edits get caught in review. Free-form-typing
+        // bypasses the allowlist, so additions/removals here are
+        // purely UX (which models surface as picker rows).
+        let models = ModelCatalogService.imageGenModels
+        #expect(models.count >= 5)
+        #expect(models.contains(where: { $0.modelID == "openai/gpt-image-1" }))
+        #expect(models.contains(where: { $0.modelID == "google/imagen-4" }))
+        // Every entry has a non-empty display + a non-empty modelID.
+        for m in models {
+            #expect(!m.modelID.isEmpty)
+            #expect(!m.display.isEmpty)
+        }
+    }
+
+    @Test func demotedProvidersContainsVercel() {
+        // Minimal lock-in for the demoted-providers static set. Mirrors
+        // Hermes's deprioritized-provider list in providers.py.
+        #expect(ModelCatalogService.demotedProviders.contains("vercel"))
+    }
+
     // MARK: - ProjectDashboardService
 
     @Test func projectDashboardServiceRegistryRoundTrip() throws {

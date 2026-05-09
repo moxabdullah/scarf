@@ -36,6 +36,13 @@ public struct DisplaySettings: Sendable, Equatable {
     public var toolProgressCommand: Bool
     public var toolPreviewLength: Int
     public var busyInputMode: String           // e.g. "interrupt"
+    /// Static-message translation language. v0.13+. Empty string means
+    /// "follow Hermes default" — the picker collapses both empty-string
+    /// and `"en"` to "English" in display, but only writes a value when
+    /// the user explicitly picks one. Persisted via
+    /// `hermes config set display.language <code>`. Supported values per
+    /// v0.13 release notes: `en`, `zh`, `ja`, `de`, `es`, `fr`, `uk`, `tr`.
+    public var language: String
 
 
     public init(
@@ -46,7 +53,8 @@ public struct DisplaySettings: Sendable, Equatable {
         inlineDiffs: Bool,
         toolProgressCommand: Bool,
         toolPreviewLength: Int,
-        busyInputMode: String
+        busyInputMode: String,
+        language: String = ""
     ) {
         self.skin = skin
         self.compact = compact
@@ -56,6 +64,7 @@ public struct DisplaySettings: Sendable, Equatable {
         self.toolProgressCommand = toolProgressCommand
         self.toolPreviewLength = toolPreviewLength
         self.busyInputMode = busyInputMode
+        self.language = language
     }
     public nonisolated static let empty = DisplaySettings(
         skin: "default",
@@ -65,7 +74,8 @@ public struct DisplaySettings: Sendable, Equatable {
         inlineDiffs: true,
         toolProgressCommand: false,
         toolPreviewLength: 0,
-        busyInputMode: "interrupt"
+        busyInputMode: "interrupt",
+        language: ""
     )
 }
 
@@ -190,6 +200,15 @@ public struct VoiceSettings: Sendable, Equatable {
     public var ttsOpenAIVoice: String
     public var ttsNeuTTSModel: String
     public var ttsNeuTTSDevice: String
+    /// xAI TTS voice identifier. v0.13+ — xAI shipped TTS earlier but the
+    /// custom-voice / cloning surface is the v0.13 add-on.
+    // TODO(WS-8-Q2): Confirm key name vs `tts.xai.voice` /
+    // `tts.xai.voice_id` / a top-level `tts.xai_voice` once a v0.13
+    // host is on hand. The setter / YAML reader follow whatever this
+    // field name implies.
+    public var ttsXAIVoiceID: String
+    /// xAI TTS model identifier. v0.13+. Mirrors the elevenlabs shape.
+    public var ttsXAIModel: String
 
     // STT
     public var sttEnabled: Bool
@@ -217,7 +236,9 @@ public struct VoiceSettings: Sendable, Equatable {
         sttLocalModel: String,
         sttLocalLanguage: String,
         sttOpenAIModel: String,
-        sttMistralModel: String
+        sttMistralModel: String,
+        ttsXAIVoiceID: String = "",
+        ttsXAIModel: String = ""
     ) {
         self.recordKey = recordKey
         self.maxRecordingSeconds = maxRecordingSeconds
@@ -230,6 +251,8 @@ public struct VoiceSettings: Sendable, Equatable {
         self.ttsOpenAIVoice = ttsOpenAIVoice
         self.ttsNeuTTSModel = ttsNeuTTSModel
         self.ttsNeuTTSDevice = ttsNeuTTSDevice
+        self.ttsXAIVoiceID = ttsXAIVoiceID
+        self.ttsXAIModel = ttsXAIModel
         self.sttEnabled = sttEnabled
         self.sttProvider = sttProvider
         self.sttLocalModel = sttLocalModel
@@ -254,7 +277,9 @@ public struct VoiceSettings: Sendable, Equatable {
         sttLocalModel: "base",
         sttLocalLanguage: "",
         sttOpenAIModel: "whisper-1",
-        sttMistralModel: "voxtral-mini-latest"
+        sttMistralModel: "voxtral-mini-latest",
+        ttsXAIVoiceID: "",
+        ttsXAIModel: ""
     )
 }
 
@@ -666,6 +691,18 @@ public struct HermesConfig: Sendable {
     /// final reply (provider/model/cost/turn count). Off by default;
     /// useful for cost auditing and screen-recording demos.
     public var runtimeMetadataFooter: Bool
+    /// Pre-v0.13: single combined Web Tools backend at `web_tools.backend`.
+    /// v0.13 split this into per-capability keys (see below). Kept readable
+    /// for round-trip compatibility on hosts that never migrated; v0.13+
+    /// hosts ignore this scalar and read the split keys instead.
+    public var webToolsBackend: String
+    /// v0.13+: `web_tools.search.backend`. SearXNG is search-only and
+    /// can land here. Pre-v0.13 hosts default to the same value as the
+    /// combined backend.
+    public var webToolsSearchBackend: String
+    /// v0.13+: `web_tools.extract.backend`. Pre-v0.13 hosts default to
+    /// the same value as the combined backend.
+    public var webToolsExtractBackend: String
 
     // -- Hermes v0.13 additions ----------------------------------------
     // Per-platform Messaging Gateway settings dictionary keyed by Hermes
@@ -677,6 +714,25 @@ public struct HermesConfig: Sendable {
     // fallback so a missing entry behaves identically to an all-default
     // entry.
     public var gatewayPlatforms: [String: GatewayPlatformSettings]
+
+    /// `image_gen.model` (v0.13+) — overrides the per-provider default
+    /// image-gen model. Empty string means "let Hermes pick the
+    /// provider default". Hermes v0.12 advertised this key but ignored
+    /// it; Scarf's `AuxiliaryTab` only renders the picker when
+    /// `HermesCapabilities.hasImageGenModel` is `true`.
+    public var imageGenModel: String
+
+    /// `openrouter.response_cache.enabled` (v0.13+) — when true, Hermes
+    /// asks OpenRouter to cache responses for repeat prompts within a
+    /// session. Off by default in Scarf's parser per WS-6 plan
+    /// recommendation. UI gated on
+    /// `HermesCapabilities.hasOpenRouterResponseCache`.
+    // TODO(WS-6-Q1): the exact YAML key shape is provisional. Verify
+    // against a v0.13 host's `hermes config check` output before
+    // shipping (see WS-6-plan §Open Questions #1). Candidate alternative
+    // shapes: `providers.openrouter.response_cache_enabled` or
+    // `prompt_caching.openrouter.enabled`.
+    public var openrouterResponseCacheEnabled: Bool
 
     // Grouped blocks
     public var display: DisplaySettings
@@ -759,12 +815,22 @@ public struct HermesConfig: Sendable {
         cacheTTL: String = "5m",
         redactionEnabled: Bool = false,
         runtimeMetadataFooter: Bool = false,
-        gatewayPlatforms: [String: GatewayPlatformSettings] = [:]
+        gatewayPlatforms: [String: GatewayPlatformSettings] = [:],
+        imageGenModel: String = "",
+        openrouterResponseCacheEnabled: Bool = false,
+        webToolsBackend: String = "duckduckgo",
+        webToolsSearchBackend: String = "duckduckgo",
+        webToolsExtractBackend: String = "reader"
     ) {
         self.cacheTTL = cacheTTL
         self.redactionEnabled = redactionEnabled
         self.runtimeMetadataFooter = runtimeMetadataFooter
         self.gatewayPlatforms = gatewayPlatforms
+        self.imageGenModel = imageGenModel
+        self.openrouterResponseCacheEnabled = openrouterResponseCacheEnabled
+        self.webToolsBackend = webToolsBackend
+        self.webToolsSearchBackend = webToolsSearchBackend
+        self.webToolsExtractBackend = webToolsExtractBackend
         self.model = model
         self.provider = provider
         self.maxTurns = maxTurns

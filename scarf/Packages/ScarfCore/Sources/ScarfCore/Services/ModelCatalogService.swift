@@ -155,8 +155,19 @@ public struct ModelCatalogService: Sendable {
             )
         }
         return byID.values.sorted { lhs, rhs in
+            // Subscription-gated first (Nous Portal).
             if lhs.subscriptionGated != rhs.subscriptionGated {
                 return lhs.subscriptionGated
+            }
+            // Demoted last (Vercel AI Gateway, per Hermes v0.13). The
+            // axis is unconditional — we don't gate on the Hermes
+            // version because "Vercel mid-alphabet on v0.12, bottom on
+            // v0.13" would be more confusing than the consistent
+            // "Vercel last" treatment for everyone.
+            let lDemoted = Self.demotedProviders.contains(lhs.providerID)
+            let rDemoted = Self.demotedProviders.contains(rhs.providerID)
+            if lDemoted != rDemoted {
+                return !lDemoted
             }
             return lhs.providerName.localizedCaseInsensitiveCompare(rhs.providerName) == .orderedAscending
         }
@@ -235,7 +246,10 @@ public struct ModelCatalogService: Sendable {
     public func provider(for modelID: String) -> HermesProviderInfo? {
         guard let catalog = loadCatalog() else { return nil }
         for (providerID, p) in catalog {
-            if p.models?[modelID] != nil {
+            // Resolve any model-rename alias for this provider before
+            // checking the catalog — see `modelAliases` for rationale.
+            let resolved = resolveModelAlias(providerID: providerID, modelID: modelID)
+            if p.models?[resolved] != nil {
                 return HermesProviderInfo(
                     providerID: providerID,
                     providerName: p.name ?? providerID,
@@ -299,14 +313,17 @@ public struct ModelCatalogService: Sendable {
     /// Look up a specific model by provider + ID. Returns nil if not in the
     /// catalog (e.g., free-typed custom model).
     public func model(providerID: String, modelID: String) -> HermesModelInfo? {
+        // Resolve any model-rename alias for this provider before
+        // checking the catalog — see `modelAliases` for rationale.
+        let resolved = resolveModelAlias(providerID: providerID, modelID: modelID)
         guard let catalog = loadCatalog(),
               let provider = catalog[providerID],
-              let raw = provider.models?[modelID] else { return nil }
+              let raw = provider.models?[resolved] else { return nil }
         return HermesModelInfo(
             providerID: providerID,
             providerName: provider.name ?? providerID,
-            modelID: modelID,
-            modelName: raw.name ?? modelID,
+            modelID: resolved,
+            modelName: raw.name ?? resolved,
             contextWindow: raw.limit?.context,
             maxOutput: raw.limit?.output,
             costInput: raw.cost?.input,
@@ -344,10 +361,14 @@ public struct ModelCatalogService: Sendable {
     /// HTTP 404 at runtime. Catch that at save time, not 6 hours later.
     public func validateModel(_ modelID: String, for providerID: String) -> ModelValidation {
         ScarfMon.measure(.diskIO, "modelCatalog.validateModel") {
-            let trimmed = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else {
+            let raw = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !raw.isEmpty else {
                 return .invalid(providerName: providerID, suggestions: [])
             }
+            // Resolve any model-rename alias before lookup so configs
+            // referencing a deprecated ID (e.g. `x-ai/grok-4.20-beta`)
+            // validate against the canonical successor.
+            let trimmed = resolveModelAlias(providerID: providerID, modelID: raw)
 
             // Overlay-only providers (Nous Portal, OpenAI Codex, Qwen
             // OAuth, …) serve their own catalogs that aren't mirrored to
@@ -432,6 +453,78 @@ public struct ModelCatalogService: Sendable {
         let context: Int?
         let output: Int?
     }
+
+    // MARK: - Model aliases (model rename resolution)
+
+    /// Hermes deprecates model IDs across releases. When a stored config
+    /// `model.default` references a deprecated ID, resolve to its
+    /// canonical successor. Lossless — we never rewrite the user's
+    /// `config.yaml`; the alias just lets `validateModel` /
+    /// `model(providerID:modelID:)` / `provider(for:)` succeed against
+    /// the new ID.
+    ///
+    /// Keys are slash-joined `providerID/modelID` to disambiguate
+    /// across providers — even if `vercel` later adds a `grok-4.20-beta`
+    /// alias on its own, the openrouter resolution shouldn't fire.
+    /// Values are the bare resolved model ID (no provider prefix).
+    ///
+    /// **Schema is Swift-primary.** Mirror new entries into Hermes's
+    /// upstream deprecation map in `hermes_cli/providers.py` if/when
+    /// upstream tracks renames in code (today they're release-notes
+    /// only).
+    public static let modelAliases: [String: String] = [
+        // v0.13: x-ai dropped the `-beta` suffix once Grok 4.20 GA'd.
+        // The model is the same one served at the same OpenRouter slot;
+        // only the marketing identifier changed.
+        // TODO(WS-6-Q4): verify whether OpenRouter retired the
+        // `x-ai/grok-4.20-beta` slot entirely. Either way the alias is
+        // correct (cosmetic if old slot stays live, load-bearing if it
+        // 404s).
+        "openrouter/x-ai/grok-4.20-beta": "x-ai/grok-4.20",
+        "xai/grok-4.20-beta": "grok-4.20",
+        "vercel/xai/grok-4.20-beta": "xai/grok-4.20",
+    ]
+
+    /// Resolve a stored model identifier through the alias map. Returns
+    /// the input unchanged when no alias exists. Pure function — used at
+    /// read time everywhere a config'd model ID is rendered, validated,
+    /// or sent to Hermes.
+    public func resolveModelAlias(providerID: String, modelID: String) -> String {
+        let composite = "\(providerID)/\(modelID)"
+        return Self.modelAliases[composite] ?? modelID
+    }
+
+    // MARK: - Demoted providers (sort tail)
+
+    /// Provider IDs that Hermes v0.13 explicitly deprioritizes in the
+    /// picker. `loadProviders()` sorts these to the tail of the list,
+    /// after the alphabetical group, so users who haven't manually
+    /// chosen Vercel as their gateway don't end up there by default.
+    /// Mirrors Hermes's deprioritized-provider list in
+    /// `hermes-agent/hermes_cli/providers.py`.
+    public static let demotedProviders: Set<String> = [
+        "vercel",
+    ]
+
+    // MARK: - Image-generation model allowlist (curated)
+
+    /// Known image-generation models, used to pre-populate the
+    /// `image_gen.model` picker on the Auxiliary tab. The list is
+    /// curated — `models_dev_cache.json` doesn't tag image-capable
+    /// models, so we maintain this by hand on Hermes version bumps.
+    /// Always free-form-typeable on the picker too, so missing entries
+    /// don't block users with non-listed image providers.
+    ///
+    /// Order: most-likely-to-be-chosen first.
+    public static let imageGenModels: [HermesImageGenModel] = [
+        .init(modelID: "openai/gpt-image-1", display: "OpenAI · gpt-image-1", providerHint: "openai"),
+        .init(modelID: "google/imagen-4", display: "Google · Imagen 4", providerHint: "google-vertex"),
+        .init(modelID: "google/imagen-3", display: "Google · Imagen 3", providerHint: "google-vertex"),
+        .init(modelID: "stability/stable-image-ultra", display: "Stability · Stable Image Ultra", providerHint: "stability"),
+        .init(modelID: "fal-ai/flux-pro-1.1", display: "fal · FLUX 1.1 Pro", providerHint: "fal"),
+        .init(modelID: "black-forest-labs/flux-1.1-pro", display: "Black Forest Labs · FLUX 1.1 Pro", providerHint: "openrouter"),
+        .init(modelID: "openai/dall-e-3", display: "OpenAI · DALL·E 3", providerHint: "openai"),
+    ]
 
     // MARK: - Hermes overlay providers
 
@@ -536,6 +629,27 @@ public struct ModelCatalogService: Sendable {
             docURL: nil
         ),
     ]
+}
+
+/// Curated entry for the `image_gen.model` picker on the Auxiliary
+/// tab. Hermes v0.13 honors a top-level `image_gen.model` key but the
+/// models.dev catalog has no `image: true` tag, so we maintain a
+/// short hand-curated allowlist keyed by display order. The picker
+/// always allows free-form-typing too, so any provider's model ID
+/// works regardless of whether it appears here.
+public struct HermesImageGenModel: Sendable, Identifiable, Hashable {
+    public let modelID: String
+    public let display: String
+    /// Hint at which provider serves this model — surfaced as a
+    /// "Configure provider X first" advisory but never enforced.
+    public let providerHint: String?
+    public var id: String { modelID }
+
+    public init(modelID: String, display: String, providerHint: String?) {
+        self.modelID = modelID
+        self.display = display
+        self.providerHint = providerHint
+    }
 }
 
 /// Scarf-side mirror of `HermesOverlay` from hermes-agent's

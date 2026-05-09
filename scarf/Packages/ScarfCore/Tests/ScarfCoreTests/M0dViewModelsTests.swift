@@ -162,6 +162,47 @@ import Foundation
         // start → false.
         #expect(vm.supportsCompress == false)
         #expect(vm.hasBroaderCommandMenu == false)
+        // v0.13: compression count starts at 0 so the SessionInfoBar chip
+        // stays hidden on fresh sessions.
+        #expect(vm.acpCompressionCount == 0)
+    }
+
+    @Test @MainActor func richChatTracksCompressionCountFromPromptResults() {
+        let vm = RichChatViewModel(context: .local)
+        let response = ACPPromptResult(
+            stopReason: "end_turn",
+            inputTokens: 100, outputTokens: 50,
+            thoughtTokens: 20, cachedReadTokens: 10,
+            compressionCount: 3
+        )
+        vm.handleACPEvent(.promptComplete(sessionId: "s", response: response))
+        #expect(vm.acpCompressionCount == 3)
+
+        // Subsequent prompts overwrite (with a max guard) — the server
+        // emits a session-wide running total, not a per-prompt delta.
+        let next = ACPPromptResult(
+            stopReason: "end_turn",
+            inputTokens: 0, outputTokens: 0,
+            thoughtTokens: 0, cachedReadTokens: 0,
+            compressionCount: 5
+        )
+        vm.handleACPEvent(.promptComplete(sessionId: "s", response: next))
+        #expect(vm.acpCompressionCount == 5)
+
+        // A pre-v0.13 host mid-session emits 0; the max-guard keeps the
+        // last real value rather than snapping back.
+        let stale = ACPPromptResult(
+            stopReason: "end_turn",
+            inputTokens: 0, outputTokens: 0,
+            thoughtTokens: 0, cachedReadTokens: 0,
+            compressionCount: 0
+        )
+        vm.handleACPEvent(.promptComplete(sessionId: "s", response: stale))
+        #expect(vm.acpCompressionCount == 5)
+
+        // reset() clears the counter so a fresh session starts clean.
+        vm.reset()
+        #expect(vm.acpCompressionCount == 0)
     }
 
     @Test @MainActor func messageGroupDerivedProperties() {

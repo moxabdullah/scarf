@@ -173,6 +173,10 @@ v0.10.0 introduced the **Tool Gateway** — paid Nous Portal subscribers route w
 
 **Keep `ModelCatalogService.overlayOnlyProviders` in sync** with `HERMES_OVERLAYS` in `~/.hermes/hermes-agent/hermes_cli/providers.py`. When Hermes adds a new overlay-only provider, mirror the entry (display name, base URL, auth type, subscription-gated flag, doc URL) or the picker won't reach it.
 
+**Keep `ModelCatalogService.modelAliases` in sync** with Hermes's deprecated-model-ID map (currently release-notes-only upstream; the canonical successor lives in `hermes_cli/providers.py` if/when upstream tracks it in code). Drift here means a user's old model ID stops resolving in the picker even though Hermes still accepts it at runtime.
+
+**Keep `ModelCatalogService.demotedProviders` in sync** with the deprioritized-provider list in `hermes-agent/hermes_cli/providers.py`. Drift means Vercel AI Gateway (or any future demoted provider) sorts in the wrong position in Scarf's picker.
+
 ## Kanban v3: drag-and-drop board + per-project tenants (v2.7.5)
 
 Scarf v2.7.5 promotes Kanban from a read-only list to a full board with drag-and-drop, every Hermes write verb wired up, and per-project boards bound to a Scarf-minted tenant slug. The list view is preserved as a `Board | List` toggle for accessibility / narrow-window fallback.

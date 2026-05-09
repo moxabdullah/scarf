@@ -139,6 +139,23 @@ struct AuxiliaryTab: View {
                 auxRows(for: task.key)
             }
         }
+        // -- Hermes v0.13 additions ---------------------------------
+        // Image-gen model picker. Hermes v0.13 honors `image_gen.model`
+        // as a top-level YAML key; pre-v0.13 hosts ignore it silently.
+        // Hide the section on pre-v0.13 hosts to spare users a
+        // "I set this and nothing happened" trap.
+        if capabilitiesStore?.capabilities.hasImageGenModel ?? false {
+            SettingsSection(title: "Image Generation", icon: "photo") {
+                imageGenRow
+            }
+        }
+        // OpenRouter response caching toggle (v0.13+). Same hide-on-
+        // pre-v0.13 rationale: the toggle no-ops on older Hermes hosts.
+        if capabilitiesStore?.capabilities.hasOpenRouterResponseCache ?? false {
+            SettingsSection(title: "OpenRouter", icon: "shippingbox") {
+                openRouterResponseCacheRow
+            }
+        }
         // Unknown / unrecognised aux tasks present in config.yaml.
         // Shown only when at least one such key is present so the
         // typical user with a clean config never sees this section.
@@ -223,6 +240,60 @@ struct AuxiliaryTab: View {
             .padding(.horizontal, 12)
             .padding(.bottom, 4)
         }
+    }
+
+    // MARK: - v0.13 surfaces
+
+    /// Image-gen model picker — curated allowlist + free-form custom
+    /// entry. Capability-gated by the caller; this view assumes the
+    /// host honors `image_gen.model` (Hermes v0.13+).
+    @ViewBuilder
+    private var imageGenRow: some View {
+        let value = viewModel.config.imageGenModel
+        Picker("Model", selection: Binding(
+            get: { value },
+            set: { viewModel.setImageGenModel($0) }
+        )) {
+            Text("Provider default").tag("")
+            Divider()
+            ForEach(ModelCatalogService.imageGenModels) { model in
+                Text(model.display).tag(model.modelID)
+            }
+            // User has set a custom value not in the curated list;
+            // preserve it as a tagged option so the picker renders the
+            // actual selection rather than collapsing to "Provider
+            // default".
+            if !value.isEmpty
+                && !ModelCatalogService.imageGenModels.contains(where: { $0.modelID == value }) {
+                Divider()
+                Text(value + "  (custom)").tag(value)
+            }
+        }
+        .pickerStyle(.menu)
+        EditableTextField(label: "Custom model ID", value: value) { newValue in
+            viewModel.setImageGenModel(newValue.trimmingCharacters(in: .whitespaces))
+        }
+        Text("Used for image generation calls. Leave as Provider default unless your provider documents a specific model ID for image-gen.")
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 4)
+    }
+
+    /// OpenRouter response-caching toggle (Hermes v0.13+). Off by
+    /// default; surfaced for users with highly repeated prompts who
+    /// want OpenRouter to cache identical-prompt responses.
+    @ViewBuilder
+    private var openRouterResponseCacheRow: some View {
+        let isOn = viewModel.config.openrouterResponseCacheEnabled
+        ToggleRow(label: "Response caching", isOn: isOn) { newValue in
+            viewModel.setOpenRouterResponseCache(newValue)
+        }
+        Text("OpenRouter caches identical prompts within a session to reduce token costs. Off by default — enable when your workload has highly repeated prompts.")
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 4)
     }
 
     private func auxModel(for key: String) -> AuxiliaryModel {

@@ -229,6 +229,12 @@ public final class RichChatViewModel {
     public private(set) var acpOutputTokens = 0
     public private(set) var acpThoughtTokens = 0
     public private(set) var acpCachedReadTokens = 0
+    /// Running count of context compactions Hermes has performed on this
+    /// session. Surfaced as the `🗜 ×N` chip in `SessionInfoBar` when > 0
+    /// and `HermesCapabilities.hasContextCompressionCount` is true. Each
+    /// `session/prompt` response carries the latest server-side total, so
+    /// we replace (with a `max` guard) rather than accumulate.
+    public private(set) var acpCompressionCount = 0
 
     /// Slash commands advertised by the ACP server via `available_commands_update`.
     public private(set) var acpCommands: [HermesSlashCommand] = []
@@ -608,6 +614,7 @@ public final class RichChatViewModel {
         acpErrorHint = nil
         acpErrorDetails = nil
         acpCachedReadTokens = 0
+        acpCompressionCount = 0
         acpCommands = []
         projectScopedCommands = []
         currentTurnStart = nil
@@ -959,6 +966,13 @@ public final class RichChatViewModel {
         acpOutputTokens += response.outputTokens
         acpThoughtTokens += response.thoughtTokens
         acpCachedReadTokens += response.cachedReadTokens
+        // Compression count is a session-wide running total emitted by
+        // Hermes; each prompt response carries the latest value, so we
+        // replace rather than accumulate. The `max` guard tolerates
+        // pre-v0.13 hosts (which emit 0) being upgraded server-side
+        // mid-session — once a real number lands the count resumes from
+        // there rather than snapping back to 0.
+        acpCompressionCount = max(acpCompressionCount, response.compressionCount)
         isAgentWorking = false
         // v2.8 / Hermes v0.13 — Hermes runs the next `/queue`-deferred
         // prompt server-side now that this turn has settled. Drain the

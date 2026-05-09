@@ -242,6 +242,15 @@ import Foundation
             thoughtTokens: 20, cachedReadTokens: 10
         )
         #expect(prompt.stopReason == "end_turn")
+        // v0.13: compressionCount has a 0 default for legacy callers.
+        #expect(prompt.compressionCount == 0)
+
+        let v013Prompt = ACPPromptResult(
+            stopReason: "end_turn", inputTokens: 0, outputTokens: 0,
+            thoughtTokens: 0, cachedReadTokens: 0,
+            compressionCount: 7
+        )
+        #expect(v013Prompt.compressionCount == 7)
     }
 
     @Test func projectDashboardInitChain() {

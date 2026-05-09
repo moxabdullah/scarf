@@ -146,7 +146,7 @@ final class CronViewModel {
         }
     }
 
-    func createJob(schedule: String, prompt: String, name: String, deliver: String, skills: [String], script: String, repeatCount: String, workdir: String = "") {
+    func createJob(schedule: String, prompt: String, name: String, deliver: String, skills: [String], script: String, repeatCount: String, workdir: String = "", noAgent: Bool = false) {
         var args = ["cron", "create"]
         if !name.isEmpty { args += ["--name", name] }
         if !deliver.isEmpty { args += ["--deliver", deliver] }
@@ -158,12 +158,25 @@ final class CronViewModel {
         // know the flag — argparse rejects unknown args, so the form
         // omits the flag when the field is empty.
         if !workdir.isEmpty { args += ["--workdir", workdir] }
+        // v0.13+: --no-agent runs the pre-run script and skips the AI turn.
+        // Caller (CronView) strips this on pre-v0.13 hosts so the flag is
+        // never emitted to a Hermes that can't parse it.
+        if noAgent { args.append("--no-agent") }
         args.append(schedule)
-        if !prompt.isEmpty { args.append(prompt) }
+        // TODO(WS-7-Q5): When --no-agent is set Hermes ignores the prompt arg,
+        // but argparse still wants positional args to line up with the
+        // schedule. The plan recommends passing an empty string explicitly so
+        // the positional parser doesn't treat the prompt as missing — verify
+        // this behaviour against `hermes cron create --help` on a v0.13 host.
+        if noAgent {
+            args.append("")
+        } else if !prompt.isEmpty {
+            args.append(prompt)
+        }
         runAndReload(args, success: "Job created")
     }
 
-    func updateJob(id: String, schedule: String?, prompt: String?, name: String?, deliver: String?, repeatCount: String?, newSkills: [String]?, clearSkills: Bool, script: String?, workdir: String? = nil) {
+    func updateJob(id: String, schedule: String?, prompt: String?, name: String?, deliver: String?, repeatCount: String?, newSkills: [String]?, clearSkills: Bool, script: String?, workdir: String? = nil, noAgent: Bool? = nil) {
         var args = ["cron", "edit", id]
         if let schedule, !schedule.isEmpty { args += ["--schedule", schedule] }
         if let prompt, !prompt.isEmpty { args += ["--prompt", prompt] }
@@ -180,6 +193,16 @@ final class CronViewModel {
         // = user cleared an existing workdir; Hermes documents `--workdir ""`
         // on edit as the explicit clear gesture, mirroring the `--script` shape.
         if let workdir { args += ["--workdir", workdir] }
+        // TODO(WS-7-Q4): The toggle-off shape of `--no-agent` on edit is
+        // unverified. Plan assumes Hermes accepts `--agent` to flip the flag
+        // back; if the CLI is one-way (`--no-agent` only), the edit-mode
+        // toggle should disable itself with a tooltip explaining the
+        // limitation. Send the flag in the assumed shape for now and adjust
+        // post-integration.
+        if let noAgent {
+            if noAgent { args.append("--no-agent") }
+            else { args.append("--agent") }
+        }
         runAndReload(args, success: "Updated")
     }
 

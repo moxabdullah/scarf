@@ -84,7 +84,11 @@ struct HermesFileService: Sendable {
             inlineDiffs: bool("display.inline_diffs", default: true),
             toolProgressCommand: bool("display.tool_progress_command", default: false),
             toolPreviewLength: int("display.tool_preview_length", default: 0),
-            busyInputMode: str("display.busy_input_mode", default: "interrupt")
+            busyInputMode: str("display.busy_input_mode", default: "interrupt"),
+            // v0.13: empty default means "key absent — agent uses its own
+            // default" (English). The picker writes a real value when the
+            // user explicitly chooses one.
+            language: str("display.language", default: "")
         )
 
         let terminal = TerminalSettings(
@@ -131,7 +135,12 @@ struct HermesFileService: Sendable {
             sttLocalModel: str("stt.local.model", default: "base"),
             sttLocalLanguage: str("stt.local.language"),
             sttOpenAIModel: str("stt.openai.model", default: "whisper-1"),
-            sttMistralModel: str("stt.mistral.model", default: "voxtral-mini-latest")
+            sttMistralModel: str("stt.mistral.model", default: "voxtral-mini-latest"),
+            // TODO(WS-8-Q2): Verify key names. Mirroring the elevenlabs
+            // shape (`<provider>.voice_id` + `<provider>.model`); v0.13
+            // source might use `tts.xai.voice` or `tts.xai.model_id`.
+            ttsXAIVoiceID: str("tts.xai.voice_id"),
+            ttsXAIModel: str("tts.xai.model")
         )
 
         func aux(_ name: String) -> AuxiliaryModel {
@@ -641,7 +650,8 @@ struct HermesFileService: Sendable {
                 toolsExclude: server.toolsExclude,
                 resourcesEnabled: server.resourcesEnabled,
                 promptsEnabled: server.promptsEnabled,
-                hasOAuthToken: hasToken
+                hasOAuthToken: hasToken,
+                sseReadTimeout: server.sseReadTimeout
             )
         }
     }
@@ -670,6 +680,37 @@ struct HermesFileService: Sendable {
             cliArgs.append(contentsOf: ["--auth", auth])
         }
         return runHermesCLI(args: cliArgs, timeout: 45, stdinInput: "y\ny\ny\n")
+    }
+
+    /// Adds an SSE-transport MCP server. v0.13+ only — caller is responsible
+    /// for capability-gating; pre-v0.13 hosts will reject the `--transport`
+    /// flag at argparse time. The optional `sseReadTimeout` is passed via
+    /// `--sse-read-timeout <int>` and persisted as `sse_read_timeout: <int>`
+    /// in the YAML entry.
+    // TODO(WS-7-Q3): Verify exact CLI flag spelling against `hermes mcp add --help`
+    // on a v0.13 install. Plan assumes `--transport sse` + `--sse-read-timeout`;
+    // alternatives could be `--sse` (boolean) + `--read-timeout`.
+    @discardableResult
+    nonisolated func addMCPServerSSE(name: String, url: String, sseReadTimeout: Int?) -> (exitCode: Int32, output: String) {
+        var cliArgs: [String] = ["mcp", "add", name, "--url", url, "--transport", "sse"]
+        if let timeout = sseReadTimeout {
+            cliArgs.append(contentsOf: ["--sse-read-timeout", String(timeout)])
+        }
+        return runHermesCLI(args: cliArgs, timeout: 45, stdinInput: "y\ny\ny\n")
+    }
+
+    /// Updates the `sse_read_timeout` scalar in-place via the same surgical
+    /// patcher used by `setMCPServerTimeouts`. Pass `nil` to remove the
+    /// scalar entirely (Hermes default applies).
+    @discardableResult
+    nonisolated func setMCPServerSSETimeout(name: String, sseReadTimeout: Int?) -> Bool {
+        patchMCPServerField(name: name) { entryLines in
+            if let timeout = sseReadTimeout {
+                Self.replaceOrInsertScalar(key: "sse_read_timeout", value: String(timeout), in: &entryLines)
+            } else {
+                Self.removeScalar(key: "sse_read_timeout", in: &entryLines)
+            }
+        }
     }
 
     @discardableResult
@@ -854,11 +895,23 @@ struct HermesFileService: Sendable {
 
         func flush() {
             guard let name = currentName else { return }
-            let transport: MCPTransport = fields["url"] != nil ? .http : .stdio
+            // 3-way transport discriminator: an explicit `transport: sse` scalar
+            // wins (Hermes v0.13+ emits it for SSE servers); otherwise URL-bearing
+            // entries fall back to .http (v0.12 shape) and command-bearing entries
+            // to .stdio. This preserves byte-for-byte round-trip on existing files
+            // — pre-v0.13 entries have no `transport:` key so they parse identically.
+            // TODO(WS-7-Q1): Verify Hermes v0.13 actually emits `transport: sse`
+            // (vs. inferring from the schema/url shape) once a v0.13 host is on hand.
+            let transport: MCPTransport = {
+                if fields["transport"]?.lowercased() == "sse" { return .sse }
+                if fields["url"] != nil { return .http }
+                return .stdio
+            }()
             let enabledStr = fields["enabled"]?.lowercased()
             let enabled = enabledStr != "false"
             let timeout = fields["timeout"].flatMap(Int.init)
             let connectTimeout = fields["connect_timeout"].flatMap(Int.init)
+            let sseReadTimeout = fields["sse_read_timeout"].flatMap(Int.init)
             let server = HermesMCPServer(
                 name: name,
                 transport: transport,
@@ -875,7 +928,8 @@ struct HermesFileService: Sendable {
                 toolsExclude: excludeList,
                 resourcesEnabled: resources,
                 promptsEnabled: prompts,
-                hasOAuthToken: false
+                hasOAuthToken: false,
+                sseReadTimeout: sseReadTimeout
             )
             servers.append(server)
 

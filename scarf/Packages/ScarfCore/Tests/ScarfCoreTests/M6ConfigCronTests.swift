@@ -92,6 +92,27 @@ import Foundation
         #expect(c.security.redactSecrets == true)
         #expect(c.compression.enabled == true)
         #expect(c.voice.ttsProvider == "edge")
+        // v0.13 additions default to empty / off when the YAML omits
+        // them — pre-v0.13 hosts produce this exact shape.
+        #expect(c.imageGenModel == "")
+        #expect(c.openrouterResponseCacheEnabled == false)
+    }
+
+    @Test func parsesImageGenAndOpenRouterCache() {
+        // WS-6: round-trip the two new top-level v0.13 keys. If the
+        // OpenRouter key shape changes upstream (see TODO(WS-6-Q1)),
+        // this test is the single touchpoint that pins the parser
+        // line + setter key + UI binding to a single shape.
+        let yaml = """
+        image_gen:
+          model: openai/gpt-image-1
+        openrouter:
+          response_cache:
+            enabled: true
+        """
+        let c = HermesConfig(yaml: yaml)
+        #expect(c.imageGenModel == "openai/gpt-image-1")
+        #expect(c.openrouterResponseCacheEnabled == true)
     }
 
     @Test func parsesTopLevelModel() {

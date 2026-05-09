@@ -311,6 +311,14 @@ public actor ACPClient {
         let result = try await sendRequest(method: "session/prompt", params: params)
         let dict = result?.dictValue ?? [:]
         let usage = dict["usage"] as? [String: Any] ?? [:]
+        // TODO(WS-8-Q1): Confirm wire field name once v0.13 Hermes is
+        // available. We tolerate camelCase + snake_case to match the rest
+        // of the ACP payload's mixed conventions; if Hermes routes the
+        // count through a `session/update` notification instead, this
+        // decode is a no-op and the ACPEvent path takes over.
+        let compression = (usage["compressionCount"] as? Int)
+            ?? (usage["compression_count"] as? Int)
+            ?? 0
 
         statusMessage = "Ready"
         return ACPPromptResult(
@@ -318,7 +326,8 @@ public actor ACPClient {
             inputTokens: usage["inputTokens"] as? Int ?? 0,
             outputTokens: usage["outputTokens"] as? Int ?? 0,
             thoughtTokens: usage["thoughtTokens"] as? Int ?? 0,
-            cachedReadTokens: usage["cachedReadTokens"] as? Int ?? 0
+            cachedReadTokens: usage["cachedReadTokens"] as? Int ?? 0,
+            compressionCount: compression
         )
     }
 

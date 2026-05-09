@@ -6,12 +6,26 @@ struct MCPServerAddCustomView: View {
     let viewModel: MCPServersViewModel
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
     @State private var name: String = ""
     @State private var transport: MCPTransport = .stdio
     @State private var command: String = "npx"
     @State private var argsText: String = ""
     @State private var url: String = ""
     @State private var auth: String = "none"
+    @State private var sseReadTimeout: String = ""
+
+    /// `.sse` is a v0.13+ surface; pre-v0.13 hosts only see stdio + http.
+    /// Iterating `MCPTransport.allCases` directly would render the SSE
+    /// segment unconditionally and Hermes would reject the resulting CLI
+    /// invocation at argparse time.
+    private var availableTransports: [MCPTransport] {
+        var t: [MCPTransport] = [.stdio, .http]
+        if capabilitiesStore?.capabilities.hasMCPSSETransport ?? false {
+            t.append(.sse)
+        }
+        return t
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -44,17 +58,20 @@ struct MCPServerAddCustomView: View {
                     }
                     sectionBox(title: "Transport") {
                         Picker("", selection: $transport) {
-                            ForEach(MCPTransport.allCases) { t in
+                            ForEach(availableTransports) { t in
                                 Text(t.displayName).tag(t)
                             }
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
                     }
-                    if transport == .stdio {
+                    switch transport {
+                    case .stdio:
                         stdioSection
-                    } else {
+                    case .http:
                         httpSection
+                    case .sse:
+                        sseSection
                     }
                     Text("Env vars, headers, and tool filters can be edited after the server is added.")
                         .font(.caption)
@@ -112,6 +129,28 @@ struct MCPServerAddCustomView: View {
         }
     }
 
+    private var sseSection: some View {
+        sectionBox(title: "Endpoint (SSE)") {
+            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("URL").font(.caption.bold())
+                    TextField("https://.../sse", text: $url)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("SSE Read Timeout (seconds)").font(.caption.bold())
+                    TextField("default 300", text: $sseReadTimeout)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 140)
+                    Text("Hermes-side keepalive interval. Leave blank to use the default.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
     private var canSubmit: Bool {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
         guard !trimmedName.isEmpty else { return false }
@@ -119,6 +158,8 @@ struct MCPServerAddCustomView: View {
         case .stdio:
             return !command.trimmingCharacters(in: .whitespaces).isEmpty
         case .http:
+            return !url.trimmingCharacters(in: .whitespaces).isEmpty
+        case .sse:
             return !url.trimmingCharacters(in: .whitespaces).isEmpty
         }
     }
@@ -130,14 +171,25 @@ struct MCPServerAddCustomView: View {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         let resolvedAuth: String? = (auth == "none") ? nil : auth
-        viewModel.addCustom(
-            name: trimmedName,
-            transport: transport,
-            command: command.trimmingCharacters(in: .whitespaces),
-            args: args,
-            url: url.trimmingCharacters(in: .whitespaces),
-            auth: resolvedAuth
-        )
+        switch transport {
+        case .stdio, .http:
+            viewModel.addCustom(
+                name: trimmedName,
+                transport: transport,
+                command: command.trimmingCharacters(in: .whitespaces),
+                args: args,
+                url: url.trimmingCharacters(in: .whitespaces),
+                auth: resolvedAuth
+            )
+        case .sse:
+            let trimmedTimeout = sseReadTimeout.trimmingCharacters(in: .whitespaces)
+            let parsedTimeout: Int? = trimmedTimeout.isEmpty ? nil : Int(trimmedTimeout)
+            viewModel.addCustomSSE(
+                name: trimmedName,
+                url: url.trimmingCharacters(in: .whitespaces),
+                sseReadTimeout: parsedTimeout
+            )
+        }
         dismiss()
     }
 

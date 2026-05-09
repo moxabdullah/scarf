@@ -131,11 +131,37 @@ struct AdvancedTab: View {
                 isOn: viewModel.config.redactionEnabled
             ) { viewModel.setSetting("redaction.enabled", value: $0 ? "true" : "false") }
 
+            redactionDefaultsHint
+
             ToggleRow(
                 label: "Runtime metadata footer",
                 isOn: viewModel.config.runtimeMetadataFooter
             ) { viewModel.setSetting("agent.runtime_metadata_footer", value: $0 ? "true" : "false") }
         }
+    }
+
+    /// Inline hint below the redaction toggle. The server-side default
+    /// flipped from OFF (v0.12) to ON (v0.13), but Scarf's parser still
+    /// reads "absent key" as `false` — meaning a v0.13 host with no
+    /// explicit key in `config.yaml` shows the toggle OFF while the
+    /// agent treats redaction as ON. Hint copy disambiguates so users
+    /// can tell what's actually happening server-side.
+    @ViewBuilder
+    private var redactionDefaultsHint: some View {
+        let isV013 = capabilitiesStore?.capabilities.isV013OrLater ?? false
+        HStack {
+            Text("")
+                .font(.caption)
+                .frame(width: 160, alignment: .trailing)
+            Text(isV013
+                 ? "Recommended: ON. Hermes v0.13+ defaults to redacting secrets unless you opt out."
+                 : "Default OFF in Hermes v0.12. Toggle ON to redact secrets in logs and shares.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
     }
 
     private var backupSection: some View {

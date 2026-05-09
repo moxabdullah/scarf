@@ -152,7 +152,22 @@ struct PickerRow: View {
     let label: String
     let selection: String
     let options: [String]
+    let optionLabel: ((String) -> String)?
     let onChange: (String) -> Void
+
+    init(
+        label: String,
+        selection: String,
+        options: [String],
+        optionLabel: ((String) -> String)? = nil,
+        onChange: @escaping (String) -> Void
+    ) {
+        self.label = label
+        self.selection = selection
+        self.options = options
+        self.optionLabel = optionLabel
+        self.onChange = onChange
+    }
 
     var body: some View {
         HStack {
@@ -162,13 +177,20 @@ struct PickerRow: View {
                 set: { onChange($0) }
             )) {
                 ForEach(options, id: \.self) { option in
-                    Text(option.isEmpty ? "(none)" : option).tag(option)
+                    Text(displayLabel(for: option)).tag(option)
                 }
             }
             .frame(maxWidth: 250)
             Spacer()
         }
         .settingsRowChrome()
+    }
+
+    private func displayLabel(for option: String) -> String {
+        if let mapper = optionLabel {
+            return mapper(option)
+        }
+        return option.isEmpty ? "(none)" : option
     }
 }
 
