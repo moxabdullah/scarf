@@ -26,6 +26,7 @@ struct SettingsView: View {
         case agent = "Agent"
         case terminal = "Terminal"
         case browser = "Browser"
+        case webTools = "Web Tools"
         case voice = "Voice"
         case memory = "Memory"
         case auxiliary = "Aux Models"
@@ -41,6 +42,7 @@ struct SettingsView: View {
             case .agent: return "Agent"
             case .terminal: return "Terminal"
             case .browser: return "Browser"
+            case .webTools: return "Web Tools"
             case .voice: return "Voice"
             case .memory: return "Memory"
             case .auxiliary: return "Aux Models"
@@ -56,6 +58,7 @@ struct SettingsView: View {
             case .agent: return "brain.head.profile"
             case .terminal: return "terminal"
             case .browser: return "globe"
+            case .webTools: return "globe.americas"
             case .voice: return "mic"
             case .memory: return "memorychip"
             case .auxiliary: return "sparkles.rectangle.stack"
@@ -171,6 +174,7 @@ struct SettingsView: View {
         case .agent:     AgentTab(viewModel: viewModel)
         case .terminal:  TerminalTab(viewModel: viewModel)
         case .browser:   BrowserTab(viewModel: viewModel)
+        case .webTools:  WebToolsTab(viewModel: viewModel)
         case .voice:     VoiceTab(viewModel: viewModel)
         case .memory:    MemoryTab(viewModel: viewModel)
         case .auxiliary: AuxiliaryTab(viewModel: viewModel)

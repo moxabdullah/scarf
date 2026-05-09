@@ -284,7 +284,14 @@ public extension HermesConfig {
             homeAssistant: homeAssistant,
             cacheTTL: str("prompt_caching.cache_ttl", default: "5m"),
             redactionEnabled: bool("redaction.enabled", default: false),
-            runtimeMetadataFooter: bool("agent.runtime_metadata_footer", default: false)
+            runtimeMetadataFooter: bool("agent.runtime_metadata_footer", default: false),
+            // Pre-v0.13 hosts wrote a single `web_tools.backend`. v0.13 split
+            // it into per-capability keys. Read all three so the round-trip
+            // never loses a value the user already set; the WebTools tab
+            // chooses which to render based on `hasWebToolsBackendSplit`.
+            webToolsBackend: str("web_tools.backend", default: "duckduckgo"),
+            webToolsSearchBackend: str("web_tools.search.backend", default: "duckduckgo"),
+            webToolsExtractBackend: str("web_tools.extract.backend", default: "reader")
         )
     }
 }
