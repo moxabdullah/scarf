@@ -19,52 +19,68 @@
   <a href="https://www.buymeacoffee.com/awizemann"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="28"></a>
 </p>
 
-## What's New in 2.7
+## What's New in 2.8
 
-The biggest release since 2.6 — six weeks of work focused on **remote-context performance**, a **new project authoring flow**, **dashboard widgets**, **OAuth resilience**, and a top-to-bottom **performance instrumentation harness** that drove the bulk of the rest. 36 commits, no schema bump, no Hermes capability bump.
+A coordinated catch-up to **Hermes v0.13.0** ("The Tenacity Release"). v2.8 lights up every v0.13 surface across the app — Persistent Goals, ACP `/queue`, Kanban hallucination-gate + diagnostics, Curator archive/prune, Google Chat as the 20th gateway platform, cross-platform allowlists, MCP SSE transport, Cron `--no-agent` watchdog mode, per-capability Web Tools backends, and a refreshed provider catalog with five new models. 22 new capability flags gate every surface; pre-v0.13 hosts render byte-identical to v2.7.5.
 
-### Remote chats and Activity in seconds, not 30s timeouts
+### Persistent Goals + ACP `/queue`
 
-Resuming a chat or opening Activity on a slow remote (a 420ms-RTT droplet, an underprovisioned VPS, a tunnel through 4G) used to fetch the full message column set in one shot, which routinely tripped the 30s SSH timeout on chats with multi-page tool result blobs. v2.7 introduces a **skeleton-then-hydrate pattern** that bounds the wire payload by what the user actually needs to see RIGHT NOW, then fills in the heavy stuff in the background.
+- **`/goal <text>`** — locks the agent on a target that survives across turns. Surfaced as an `info`-tinted "Goal locked: …" pill in the chat header with a Clear context-menu item that dispatches `/goal --clear`. Optimistic local mirror — Hermes is the authoritative owner; Scarf paints the pill the moment you send `/goal …`.
+- **`/queue <text>`** — queues a prompt to run after the current turn completes. Header chip shows the queued count; tap opens a popover listing prompts + relative timestamps. The `/steer` slash command (existing v0.11 surface) now runs as a regular prompt on idle sessions in v0.13 (Scarf greys it only on pre-v0.13 hosts).
+- **Static slash-menu fallbacks** — pre-session, the menu surfaces `/new` (with optional `[<name>]` argument hint on v0.13). Active-session fallbacks (`/clear`, `/compact`, `/cost`, `/model`, `/tools`, `/reload-skills`, `/help`, `/exit`) round out resumed sessions where Hermes ACP doesn't re-emit `available_commands_update` after `session/load`. Deduped against the ACP-advertised set so the canonical entry always wins.
 
-- **Chat skeleton** — user + assistant rows only (skips `role='tool'`), `tool_calls` / `reasoning` hard-NULLed at SQL level. Wire payload bounded by conversational text. The chat appears in seconds. Background hydration pages tool calls in 5-id batches; tool-result CONTENT is opt-in (Settings → Display → "Load tool results in past chats", default off) with per-card lazy-fetch in the inspector pane.
-- **Activity skeleton** — metadata-only fetch (~3 KB for 50 rows). Placeholder rows render immediately; real per-call entries swap in as paged hydration completes.
-- **Single-id whale recovery** — when a 5-id batch trips the 30s timeout (one row carries an oversized `tool_calls` blob), an L1 single-id retry isolates the offender so the rest of the batch still hydrates.
+### Kanban v0.13 — hallucination gate, diagnostics engine, recovery UX
 
-### SSH cancellation that actually cancels
+- **Hallucination-gate verify / reject** — worker-created cards land with `hallucination_gate_status: pending`. The inspector renders a yellow banner ("Created by a worker — verify before running") with Verify and Reject buttons. Cards in pending state dim 0.6 with a yellow ⚠ glyph in the title row.
+- **Diagnostics rendering** — typed-mirror enum `KanbanDiagnosticKind` with severity (info / warning / critical). Per-task and per-run diagnostics surface in the inspector Runs tab as chip-lists. Auto-block reasons render verbatim in the existing red banner; darwin zombie detections show as a distinct kind.
+- **Per-task `max_retries`** — added to the create sheet (default 3) and shown as a header chip in the inspector. Write-once at create time, matching Hermes's pattern.
+- **Multiline title/body** — the create sheet's Title field accepts multiline input, capped to four visible rows.
+- Tolerant decoding everywhere — every new field uses `decodeIfPresent`; pre-v0.13 hosts parse cleanly and render the v2.7.5 board surface unchanged.
 
-`Task.detached` doesn't inherit cancellation from the awaiting parent. Pre-fix, navigating away from a chat left the underlying ssh subprocess running for the full 30s, pinning a remote sqlite query and a ControlMaster session — the "third chat hangs" / "dashboard spins after rapid switching" symptom. v2.7 wires `withTaskCancellationHandler` through `SSHScriptRunner.run` and `RemoteSQLiteBackend.query`; cancellation now reaches the `Process` within ~100ms.
+### Curator archive + prune
 
-### New Project from Scratch wizard + Keychain-backed cron secrets
+- **Archived skills section** in `CuratorView` showing `hermes curator list-archived`. Each row exposes Restore (returns to the active leaderboard) and Prune (destructive — opens a custom confirm sheet matching the template-uninstall pattern, with `ScarfDestructiveButton` "Prune permanently" and Cancel as the default keyboard action).
+- **Bulk prune** with an enumerated confirm list before a single-tap destructive action.
+- **Synchronous "Run Now"** — v0.13 `hermes curator run` blocks until done. The Run Now button shows a progress affordance for the duration; pre-v0.13 falls back to fire-and-forget.
+- New `CuratorService` actor in ScarfCore mirroring `KanbanService`'s shape, with defensive `--json` retry-without-flag fallback for verbs that may not support it on all v0.13 patch releases.
 
-A third project entry point alongside Browse Catalog and Add Existing Project. Scaffolds a Scarf-standard skeleton, registers it, and hands off to a chat session that auto-activates the bundled `scarf-template-author` skill. The skill drives the rest conversationally — widgets, optional config schema, optional cron — and writes the final files itself.
+### Messaging Gateway — Google Chat + cross-platform allowlists
 
-**Cron + Keychain.** Cron prompts that referenced `secret`-typed config fields used to get the literal `keychain://...` URI back, producing 401s. v2.7 mirrors resolved Keychain values into `~/.hermes/.env` under `$SCARF_<UPPER_SLUG>_<UPPER_FIELD>` env vars. Hermes already reloads `.env` per cron tick — credential rotation is automatic.
+- **Google Chat** as the 20th platform.
+- **Cross-platform allowlist editor** — per-platform `allowed_channels` (Slack / Mattermost / Google Chat), `allowed_chats` (Telegram / WhatsApp), `allowed_rooms` (Matrix / DingTalk). New `AllowlistEditor` component plus a `GatewayConfigWriter` that handles list-block YAML mutations directly (since `hermes config set` doesn't support lists).
+- **Per-platform behavior toggles** — `busy_ack_enabled`, `gateway_restart_notification`, slash-command auto-delete TTL.
+- **`hermes gateway list` cross-profile digest** — inline status row showing which profile is running which platform across all profiles.
 
-### Project dashboards — file-reading widgets, sparklines, typed status
+### Provider catalog refresh + Settings polish
 
-Five new widget types and project-wide auto-refresh. **Backwards-compatible** — every existing `dashboard.json` renders byte-identically.
+- **Five new models** — `deepseek/deepseek-v4-pro`, `x-ai/grok-4.3`, `openrouter/owl-alpha` (free), `tencent/hy3-preview`, `arcee/trinity-large-thinking`. `x-ai/grok-4.20-beta` → `x-ai/grok-4.20` alias-resolved at read time so existing user configs keep working without YAML rewrites. Vercel AI Gateway demoted to the bottom of the picker.
+- **`image_gen.model` honored** in `Settings → Auxiliary` with a curated picker (free-form entry also accepted).
+- **OpenRouter response caching** toggle.
+- **MCP SSE transport** with `sse_read_timeout` field, alongside stdio and HTTP.
+- **Cron `--no-agent` watchdog mode** — script-only cron jobs that skip the AI call.
+- **Web Tools per-capability backends** — separate pickers for `web_search` and `web_extract`. SearXNG appears in the search picker only.
+- **Profiles `--no-skills`** — empty-profile creation (mutually exclusive with `--clone-all`).
+- **Context compression count** chip in chat status bar, **`/new <name>`** argument hint, **`display.language`** picker (zh / ja / de / es / fr / uk / tr), **xAI Custom Voices** badge, **redaction default-flip awareness** (v0.13 server-side default is now ON).
 
-- **`markdown_file`** / **`log_tail`** / **`cron_status`** / **`image`** / **`status_grid`** — file-reading widgets that auto-refresh when the underlying file changes. By convention, place files inside `<project>/.scarf/`.
-- **`stat` widget gains inline sparklines** via optional `sparkline: [Number]`. SVG-only render; dozens per dashboard cost nothing.
-- **Typed status badges** with lenient decode (`ok`/`up` → success, `down`/`error` → danger). Unknown strings render as plain text rather than crashing.
-- **Structured widget error card** replaces the legacy "Unknown: \<type\>" placeholder.
+### iOS read-only catch-up
 
-### OAuth resilience + Credential Pools
+Following the Phase H precedent, ScarfGo mirrors selected v2.8 surfaces as read-only:
+- Goal pill + queue chip in the chat header (tap = no-op; the Mac app owns mutations).
+- Kanban v0.13 diagnostics on `ScarfGoKanbanDetailSheet` — `retries: N` chip, "Worker-created — verify on Mac" hallucination badge, red `auto_blocked_reason` banner, tappable diagnostics chip-lists.
+- Curator Archived list (read-only; footer points users to the Mac app).
+- Settings → Platforms extension (Google Chat, busy-ack / restart-notification summaries with mixed-state indicator, allowlist DisclosureGroups).
+- "v0.13 features active" badge in iOS Settings with a what's-new sheet.
 
-- **Daily OAuth keepalive cron** prevents Anthropic OAuth refresh tokens from expiring after weeks of inactivity.
-- **Remote re-auth** unblocked — OAuth flow drives a remote `hermes auth add` correctly with stdin forwarded.
-- **OAuth remove button** + auto-refresh of Credential Pools on `auth.json` change.
-- **`resolve_provider_client` errors** (auxiliary task references an unauthenticated provider) classified into a clear hint with a one-click jump to Settings → Aux Models.
-- **Model/provider mismatch banner** detects when `model.default` carries a `<provider>/...` prefix that disagrees with `model.provider`, with one-click fix in either direction.
+iOS write parity is deferred to v2.8.x.
 
-### ScarfMon — performance instrumentation harness
+### Bug fixes uncovered during v0.13.0 dogfooding
 
-The diagnostic surface that drove the bulk of the v2.7 perf work. Off by default; signpost-only mode (Instruments-friendly) is free; Full mode keeps a 4096-entry in-memory ring buffer you can copy as JSON for paste-into-issue diagnosis. Wiki: [Performance-Monitoring](https://github.com/awizemann/scarf/wiki/Performance-Monitoring).
+- **Dashboard flicker on v0.13 hosts** — Hermes v0.13 writes to `state.db-wal` at ~10 Hz during gateway activity, which used to stack 5+ concurrent `dashboardSnapshot` calls and surface as `BackendError error 3`. Fixed via file-watcher coalescing (500 ms quiet floor + 1.5 s max-wait safeguard so coincident `gateway_state.json` Start/Stop touches can't be starved) plus dashboard load dedupe.
+- **Sparse slash menu on resumed sessions** — Hermes ACP only emits `available_commands_update` after `session/new`, not after `session/load`. Combined with `RichChatViewModel.reset()` clearing `acpCommands` on every session switch, resumed sessions landed at a 4-command fallback. Fixed by preserving `acpCommands` across reset (they're agent-level, not session-level) plus the static fallback set noted above.
 
-See the full [v2.7.0 release notes](https://github.com/awizemann/scarf/releases/tag/v2.7.0) for the complete list (36 commits, including: in-flight coalescing for `loadRecentSessions`, snapshot pipeline rewrite from `sqlite3 .backup` to direct SSH-streamed queries [#74](https://github.com/awizemann/scarf/issues/74), per-message TTS, window-position persistence, sidebar reorder, and many other fixes).
+See the full [v2.8.0 release notes](https://github.com/awizemann/scarf/releases/tag/v2.8.0) for the complete list, including the v2.7 highlights (skeleton-then-hydrate chat + Activity loaders, SSH cancellation propagation, in-flight coalescing, New Project from Scratch wizard, Cron + Keychain mirroring, the ScarfMon perf harness, five dashboard widget types) which are all still in play.
 
-**Previous releases:** see the [Release Notes Index](https://github.com/awizemann/scarf/wiki/Release-Notes-Index) on the wiki for v2.6, v2.5, v2.3, v2.2, v2.0, v1.6, and earlier.
+**Previous releases:** see the [Release Notes Index](https://github.com/awizemann/scarf/wiki/Release-Notes-Index) on the wiki for v2.7, v2.6, v2.5, v2.3, v2.2, v2.0, v1.6, and earlier.
 
 ## ScarfGo — the iPhone companion
 
@@ -175,7 +191,7 @@ Custom, agent-generated dashboards for any project. Define stat boxes, charts, t
 - macOS 14.6+ (Sonoma) for Scarf
 - iOS 18.0+ for [ScarfGo](https://github.com/awizemann/scarf/wiki/ScarfGo) (the iPhone companion, public TestFlight from v2.5)
 - Xcode 16.0+ to build from source
-- [Hermes agent](https://github.com/hermes-ai/hermes-agent) v0.6.0+ installed at `~/.hermes/` on each target host (v0.12.0+ recommended for full v2.6 feature support — autonomous Curator, multimodal image input, 5 new providers, Microsoft Teams + Yuanbao gateways, Kanban, Skills v0.12 surface, cron `--workdir`, prompt-cache TTL, Piper TTS, Vercel terminal)
+- [Hermes agent](https://github.com/hermes-ai/hermes-agent) v0.6.0+ installed at `~/.hermes/` on each target host (v0.13.0+ recommended for full v2.8 feature support — Persistent Goals, ACP `/queue`, Kanban hallucination gate + diagnostics + per-task max_retries, Curator archive/prune + sync `run`, Google Chat as 20th platform, cross-platform allowlists, MCP SSE transport, Cron `--no-agent`, Web Tools per-capability backends, Profiles `--no-skills`, 5 new models, `image_gen.model`, OpenRouter response caching, `display.language`, xAI Custom Voices)
 - For remote servers: SSH access (key-based), `sqlite3` on the remote (for atomic DB snapshots), and the `hermes` CLI resolvable from the remote user's `PATH` or at a path you specify per server. ScarfGo requires the same on every Hermes host it connects to.
 
 ### Compatibility
@@ -190,9 +206,10 @@ Scarf reads Hermes's SQLite database and parses CLI output from `hermes status`,
 | v0.9.0 (2026-04-13) | Verified |
 | v0.10.0 (2026-04-16) | Verified (Tool Gateway introduced) |
 | v0.11.0 (2026-04-23) | Verified |
-| v0.12.0 (2026-04-30) | **Verified — current target (recommended for full v2.6 feature support)** |
+| v0.12.0 (2026-04-30) | Verified |
+| v0.13.0 (2026-05-07) | **Verified — current target (recommended for full v2.8 feature support)** |
 
-Scarf 2.6 targets Hermes v0.12.0 for the autonomous Curator, multimodal ACP image content blocks, the 5 new inference providers, Microsoft Teams + Yuanbao gateways, the read-only Kanban view, the Skills v0.12 surface (URL install / reload / disable badges / curator pin), cron `--workdir`, `auxiliary.curator`, `prompt_caching.cache_ttl`, the redaction toggle, the runtime metadata footer, Piper TTS, and the Vercel terminal backend. Every v0.12 surface is **capability-gated** — Scarf detects the host's Hermes version once per server connection (`hermes --version` → semver + `YYYY.M.D` parse) and hides v0.12-only UI on older hosts. v0.11.0 hosts keep the full v2.5 surface (`/steer`, `messages.reasoning_content`, `sessions.api_call_count`, design-md/spotify skills, SKILL.md frontmatter chips, `hermes memory reset`). Earlier Hermes versions remain supported for monitoring, sessions, file-based features, and ACP chat; new behavior degrades gracefully on older agents.
+Scarf 2.8 targets Hermes v0.13.0 for Persistent Goals + the chat-header pill, ACP `/queue` slash command, Kanban v0.13 diagnostics + recovery UX (hallucination gate, per-task max_retries, multiline title, auto-block reasons, darwin zombie detection), Curator archive/prune + synchronous `run`, Google Chat as the 20th gateway platform, cross-platform allowlists + per-platform behavior toggles, `hermes gateway list` cross-profile digest, MCP SSE transport, Cron `--no-agent` watchdog mode, Web Tools per-capability backends, Profiles `--no-skills`, the 5 new models (deepseek-v4-pro, grok-4.3, owl-alpha, hy3-preview, arcee/trinity-large-thinking), `image_gen.model`, OpenRouter response caching, context compression count, `/new <name>` argument, `display.language` static-message translation (zh / ja / de / es / fr / uk / tr), and xAI Custom Voices. Every v0.13 surface is **capability-gated** — Scarf detects the host's Hermes version once per server connection (`hermes --version` → semver + `YYYY.M.D` parse) and hides v0.13-only UI on older hosts. v0.12.0 hosts keep the full v2.7.5 surface (autonomous Curator, multimodal ACP, Kanban CLI, Microsoft Teams + Yuanbao gateways, cron `--workdir`, `auxiliary.curator`, `prompt_caching.cache_ttl`, the redaction toggle, the runtime metadata footer, Piper TTS, Vercel terminal). Earlier Hermes versions remain supported for monitoring, sessions, file-based features, and ACP chat; new behavior degrades gracefully on older agents.
 
 If a Hermes update changes the database schema or CLI output format, Scarf may need to be updated. Check the [Health](#features) view for compatibility warnings.
 
