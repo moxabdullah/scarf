@@ -666,6 +666,18 @@ public struct HermesConfig: Sendable {
     /// final reply (provider/model/cost/turn count). Off by default;
     /// useful for cost auditing and screen-recording demos.
     public var runtimeMetadataFooter: Bool
+    /// Pre-v0.13: single combined Web Tools backend at `web_tools.backend`.
+    /// v0.13 split this into per-capability keys (see below). Kept readable
+    /// for round-trip compatibility on hosts that never migrated; v0.13+
+    /// hosts ignore this scalar and read the split keys instead.
+    public var webToolsBackend: String
+    /// v0.13+: `web_tools.search.backend`. SearXNG is search-only and
+    /// can land here. Pre-v0.13 hosts default to the same value as the
+    /// combined backend.
+    public var webToolsSearchBackend: String
+    /// v0.13+: `web_tools.extract.backend`. Pre-v0.13 hosts default to
+    /// the same value as the combined backend.
+    public var webToolsExtractBackend: String
 
     // -- Hermes v0.13 additions ----------------------------------------
     // Per-platform Messaging Gateway settings dictionary keyed by Hermes
@@ -780,7 +792,10 @@ public struct HermesConfig: Sendable {
         runtimeMetadataFooter: Bool = false,
         gatewayPlatforms: [String: GatewayPlatformSettings] = [:],
         imageGenModel: String = "",
-        openrouterResponseCacheEnabled: Bool = false
+        openrouterResponseCacheEnabled: Bool = false,
+        webToolsBackend: String = "duckduckgo",
+        webToolsSearchBackend: String = "duckduckgo",
+        webToolsExtractBackend: String = "reader"
     ) {
         self.cacheTTL = cacheTTL
         self.redactionEnabled = redactionEnabled
@@ -788,6 +803,9 @@ public struct HermesConfig: Sendable {
         self.gatewayPlatforms = gatewayPlatforms
         self.imageGenModel = imageGenModel
         self.openrouterResponseCacheEnabled = openrouterResponseCacheEnabled
+        self.webToolsBackend = webToolsBackend
+        self.webToolsSearchBackend = webToolsSearchBackend
+        self.webToolsExtractBackend = webToolsExtractBackend
         self.model = model
         self.provider = provider
         self.maxTurns = maxTurns

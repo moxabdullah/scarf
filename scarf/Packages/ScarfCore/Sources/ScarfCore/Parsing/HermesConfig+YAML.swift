@@ -348,7 +348,14 @@ public extension HermesConfig {
             // `SettingsViewModel.setOpenRouterResponseCache`. Default
             // is `false` per WS-6-plan §Open Questions #2.
             imageGenModel: str("image_gen.model", default: ""),
-            openrouterResponseCacheEnabled: bool("openrouter.response_cache.enabled", default: false)
+            openrouterResponseCacheEnabled: bool("openrouter.response_cache.enabled", default: false),
+            // Pre-v0.13 hosts wrote a single `web_tools.backend`. v0.13 split
+            // it into per-capability keys. Read all three so the round-trip
+            // never loses a value the user already set; the WebTools tab
+            // chooses which to render based on `hasWebToolsBackendSplit`.
+            webToolsBackend: str("web_tools.backend", default: "duckduckgo"),
+            webToolsSearchBackend: str("web_tools.search.backend", default: "duckduckgo"),
+            webToolsExtractBackend: str("web_tools.extract.backend", default: "reader")
         )
     }
 }

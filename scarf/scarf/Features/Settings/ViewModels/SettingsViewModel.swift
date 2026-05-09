@@ -143,6 +143,16 @@ final class SettingsViewModel {
     func setBrowserAllowPrivateURLs(_ value: Bool) { setSetting("browser.allow_private_urls", value: value ? "true" : "false") }
     func setCamofoxManagedPersistence(_ value: Bool) { setSetting("browser.camofox.managed_persistence", value: value ? "true" : "false") }
 
+    // MARK: - Web Tools
+
+    /// Pre-v0.13 combined backend. Pre-v0.13 hosts read this; v0.13+
+    /// hosts read it for back-compat but the WebToolsTab gates writes
+    /// on `hasWebToolsBackendSplit` so the tab only writes the split
+    /// keys on v0.13.
+    func setWebToolsBackend(_ value: String) { setSetting("web_tools.backend", value: value) }
+    func setWebToolsSearchBackend(_ value: String) { setSetting("web_tools.search.backend", value: value) }
+    func setWebToolsExtractBackend(_ value: String) { setSetting("web_tools.extract.backend", value: value) }
+
     // MARK: - Voice / TTS / STT
 
     func setAutoTTS(_ value: Bool) { setSetting("voice.auto_tts", value: value ? "true" : "false") }

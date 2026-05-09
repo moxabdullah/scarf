@@ -28,6 +28,12 @@ public struct HermesCronJob: Identifiable, Sendable, Codable {
     /// job's prompt. YAML-only field today (no `--context-from` CLI
     /// flag yet) — Scarf displays it but doesn't write it.
     public nonisolated let contextFrom: [String]?
+    /// Hermes v0.13+ — script-only watchdog mode. When `true` the
+    /// pre-run script runs but the AI turn is skipped. `nil` means the
+    /// jobs.json file is pre-v0.13 (treat as `false`); `false` is the
+    /// explicit v0.13+ default. Capability-gated on `hasCronNoAgent`
+    /// at all write call sites.
+    public nonisolated let noAgent: Bool?
 
     public enum CodingKeys: String, CodingKey {
         case id, name, prompt, skills, model, schedule, enabled, state, deliver, silent
@@ -41,6 +47,7 @@ public struct HermesCronJob: Identifiable, Sendable, Codable {
         case timeoutSeconds = "timeout_seconds"
         case workdir
         case contextFrom = "context_from"
+        case noAgent = "no_agent"
     }
 
     /// Memberwise init. Swift doesn't synthesize one for us because
@@ -66,7 +73,8 @@ public struct HermesCronJob: Identifiable, Sendable, Codable {
         timeoutSeconds: Int? = nil,
         silent: Bool? = nil,
         workdir: String? = nil,
-        contextFrom: [String]? = nil
+        contextFrom: [String]? = nil,
+        noAgent: Bool? = nil
     ) {
         self.id = id
         self.name = name
@@ -88,6 +96,7 @@ public struct HermesCronJob: Identifiable, Sendable, Codable {
         self.silent = silent
         self.workdir = workdir
         self.contextFrom = contextFrom
+        self.noAgent = noAgent
     }
 
     public nonisolated init(from decoder: any Decoder) throws {
@@ -112,6 +121,7 @@ public struct HermesCronJob: Identifiable, Sendable, Codable {
         self.silent            = try c.decodeIfPresent(Bool.self, forKey: .silent)
         self.workdir           = try c.decodeIfPresent(String.self, forKey: .workdir)
         self.contextFrom       = try c.decodeIfPresent([String].self, forKey: .contextFrom)
+        self.noAgent           = try c.decodeIfPresent(Bool.self, forKey: .noAgent)
     }
 
     public nonisolated func encode(to encoder: any Encoder) throws {
@@ -136,6 +146,7 @@ public struct HermesCronJob: Identifiable, Sendable, Codable {
         try c.encodeIfPresent(silent, forKey: .silent)
         try c.encodeIfPresent(workdir, forKey: .workdir)
         try c.encodeIfPresent(contextFrom, forKey: .contextFrom)
+        try c.encodeIfPresent(noAgent, forKey: .noAgent)
     }
 
     public nonisolated var stateIcon: String {

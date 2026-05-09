@@ -42,6 +42,10 @@ final class MCPServersViewModel {
         filteredServers.filter { $0.transport == .http }
     }
 
+    var sseServers: [HermesMCPServer] {
+        filteredServers.filter { $0.transport == .sse }
+    }
+
     var selectedServer: HermesMCPServer? {
         guard let name = selectedServerName else { return nil }
         return servers.first(where: { $0.name == name })
@@ -167,6 +171,11 @@ final class MCPServersViewModel {
                     url: preset.url ?? "",
                     auth: preset.auth
                 )
+            case .sse:
+                // No SSE-transport presets ship today; the preset picker
+                // only surfaces stdio/http servers. Treat as a no-op
+                // failure if a preset somehow declares .sse.
+                addResult = (exitCode: 1, output: "SSE-transport presets are not supported.")
             }
             guard addResult.exitCode == 0 else {
                 await MainActor.run {
@@ -196,7 +205,34 @@ final class MCPServersViewModel {
                 result = fileService.addMCPServerStdio(name: name, command: command, args: args)
             case .http:
                 result = fileService.addMCPServerHTTP(name: name, url: url, auth: auth)
+            case .sse:
+                // Routed through addCustomSSE; this branch is unreachable from
+                // the add-server form (which dispatches per-transport in submit())
+                // but kept so the switch is exhaustive without `@unknown default`.
+                result = (exitCode: 1, output: "SSE servers must be added via addCustomSSE.")
             }
+            await MainActor.run {
+                if result.exitCode == 0 {
+                    self.flashStatus("Added \(name)")
+                    self.load()
+                    self.selectedServerName = name
+                    self.showRestartBanner = true
+                    self.showAddCustom = false
+                } else {
+                    self.activeError = "Add failed: \(result.output)"
+                }
+            }
+        }
+    }
+
+    /// v0.13+ SSE-transport server creation. Caller is responsible for
+    /// capability-gating; the form filters `.sse` out of `availableTransports`
+    /// when `hasMCPSSETransport` is false, so this method is unreachable
+    /// from the UI on pre-v0.13 hosts.
+    func addCustomSSE(name: String, url: String, sseReadTimeout: Int?) {
+        let fileService = self.fileService
+        Task.detached {
+            let result = fileService.addMCPServerSSE(name: name, url: url, sseReadTimeout: sseReadTimeout)
             await MainActor.run {
                 if result.exitCode == 0 {
                     self.flashStatus("Added \(name)")

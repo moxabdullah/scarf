@@ -127,6 +127,11 @@ struct MCPServerDetailView: View {
                 if let auth = server.auth, !auth.isEmpty {
                     summaryRow(label: "Auth", value: auth)
                 }
+            case .sse:
+                summaryRow(label: "URL", value: server.url ?? "—")
+                if let timeout = server.sseReadTimeout {
+                    summaryRow(label: "Read TO", value: "\(timeout)s")
+                }
             }
         }
         .padding(ScarfSpace.s3)
