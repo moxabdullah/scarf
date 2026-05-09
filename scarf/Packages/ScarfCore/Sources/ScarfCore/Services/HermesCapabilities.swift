@@ -210,6 +210,16 @@ public struct HermesCapabilities: Sendable, Equatable {
     /// PluginsView surfaces it as a documented hook in plugin metadata.
     public var hasTransformLLMOutputHook: Bool { atLeastSemver(0, 13, 0) }
 
+    // MARK: Convenience predicates
+
+    /// Whether the connected host is on the v0.13 line or newer. Convenience
+    /// for UI copy that needs to switch on the v0.12 → v0.13 boundary without
+    /// proxying through a feature-specific flag (e.g. "v0.13 features active"
+    /// badges, redaction default-state hints). Equivalent to any individual
+    /// v0.13 flag; prefer this when the call site isn't actually about a
+    /// specific feature.
+    public var isV013OrLater: Bool { atLeastSemver(0, 13, 0) }
+
     private func atLeastSemver(_ major: Int, _ minor: Int, _ patch: Int) -> Bool {
         guard let s = semver else { return false }
         return s >= SemVer(major: major, minor: minor, patch: patch)

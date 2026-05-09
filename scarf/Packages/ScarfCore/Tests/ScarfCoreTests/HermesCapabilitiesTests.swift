@@ -202,4 +202,26 @@ import Foundation
         #expect(caps.hasKanbanDiagnostics)
         #expect(caps.hasGoogleChatPlatform)
     }
+
+    // MARK: - isV013OrLater convenience predicate
+
+    @Test func isV013OrLater_v013HostTrue() {
+        let caps = HermesCapabilities.parseLine("Hermes Agent v0.13.0 (2026.5.7)")
+        #expect(caps.isV013OrLater)
+    }
+
+    @Test func isV013OrLater_v012HostFalse() {
+        let caps = HermesCapabilities.parseLine("Hermes Agent v0.12.0 (2026.4.30)")
+        #expect(!caps.isV013OrLater)
+    }
+
+    @Test func isV013OrLater_emptyFalse() {
+        let caps = HermesCapabilities.empty
+        #expect(!caps.isV013OrLater)
+    }
+
+    @Test func isV013OrLater_v014HostTrue() {
+        let caps = HermesCapabilities.parseLine("Hermes Agent v0.14.0 (2026.7.1)")
+        #expect(caps.isV013OrLater)
+    }
 }
