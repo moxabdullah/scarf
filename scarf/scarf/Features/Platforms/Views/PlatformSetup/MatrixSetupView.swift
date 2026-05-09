@@ -4,7 +4,13 @@ import ScarfDesign
 
 struct MatrixSetupView: View {
     @State private var viewModel: MatrixSetupViewModel
-    init(context: ServerContext) { _viewModel = State(initialValue: MatrixSetupViewModel(context: context)) }
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
+    let context: ServerContext
+
+    init(context: ServerContext) {
+        self.context = context
+        _viewModel = State(initialValue: MatrixSetupViewModel(context: context))
+    }
 
 
     var body: some View {
@@ -45,6 +51,13 @@ struct MatrixSetupView: View {
             }
 
             saveBar
+
+            // v0.13 Messaging Gateway behavior — self-hides on pre-v0.13.
+            GatewayBehaviorSection(
+                platform: "matrix",
+                capabilities: capabilitiesStore?.capabilities ?? .empty,
+                context: context
+            )
         }
         .onAppear { viewModel.load() }
     }

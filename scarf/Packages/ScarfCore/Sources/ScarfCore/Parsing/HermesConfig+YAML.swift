@@ -225,6 +225,58 @@ public extension HermesConfig {
             cooldownSeconds: int("platforms.homeassistant.extra.cooldown_seconds", default: 30)
         )
 
+        // -- v0.13: per-platform Messaging Gateway settings --------------
+        // Read `gateway.platforms.<platform>.{allowed_channels|allowed_chats|
+        // allowed_rooms|busy_ack_enabled|gateway_restart_notification|
+        // slash_command_notice_ttl_seconds}` and bundle each platform that
+        // has at least one v0.13 key present in the file. Platforms without
+        // an explicit block don't appear in the dictionary, so the
+        // editor's `?? .empty` fallback hands the user the v0.13 defaults
+        // without leaving stale keys littered across the YAML.
+        //
+        // TODO(WS-5-Q2): the `gateway.platforms.*` path is unverified —
+        // Hermes v0.13 may emit allowlists under `platforms.<platform>.*`
+        // (sibling to existing `platforms.slack.reply_to_mode`) instead.
+        // If so, swap the `prefix` line below to `"platforms.\(platform)."`
+        // and update `GatewayConfigWriter` in lockstep.
+        let gatewayAllowlistPlatforms = [
+            "slack", "mattermost", "google-chat",
+            "telegram", "whatsapp",
+            "matrix", "dingtalk",
+        ]
+        var gatewayPlatforms: [String: GatewayPlatformSettings] = [:]
+        for platform in gatewayAllowlistPlatforms {
+            let prefix = "gateway.platforms.\(platform)."
+            let allowedChannels = lists[prefix + "allowed_channels"] ?? []
+            let allowedChats    = lists[prefix + "allowed_chats"]    ?? []
+            let allowedRooms    = lists[prefix + "allowed_rooms"]    ?? []
+            let busy            = bool(prefix + "busy_ack_enabled", default: true)
+            let restartNotice   = bool(prefix + "gateway_restart_notification",
+                                       default: false)
+            let ttl             = int(prefix + "slash_command_notice_ttl_seconds",
+                                      default: 0)
+            // Skip platforms with no v0.13 fields present anywhere in the
+            // file. Without this guard, every supported platform would
+            // round-trip an all-default block back through writes even
+            // when the user never touched the new surface.
+            let isEmpty = allowedChannels.isEmpty
+                && allowedChats.isEmpty
+                && allowedRooms.isEmpty
+                && values[prefix + "busy_ack_enabled"] == nil
+                && values[prefix + "gateway_restart_notification"] == nil
+                && values[prefix + "slash_command_notice_ttl_seconds"] == nil
+            if !isEmpty {
+                gatewayPlatforms[platform] = GatewayPlatformSettings(
+                    allowedChannels: allowedChannels,
+                    allowedChats: allowedChats,
+                    allowedRooms: allowedRooms,
+                    busyAckEnabled: busy,
+                    gatewayRestartNotification: restartNotice,
+                    slashCommandNoticeTTLSeconds: ttl
+                )
+            }
+        }
+
         self.init(
             model: str("model.default", default: "unknown"),
             provider: str("model.provider", default: "unknown"),
@@ -284,7 +336,8 @@ public extension HermesConfig {
             homeAssistant: homeAssistant,
             cacheTTL: str("prompt_caching.cache_ttl", default: "5m"),
             redactionEnabled: bool("redaction.enabled", default: false),
-            runtimeMetadataFooter: bool("agent.runtime_metadata_footer", default: false)
+            runtimeMetadataFooter: bool("agent.runtime_metadata_footer", default: false),
+            gatewayPlatforms: gatewayPlatforms
         )
     }
 }

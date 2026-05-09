@@ -2,12 +2,24 @@ import SwiftUI
 import ScarfCore
 import ScarfDesign
 
+/// Messaging Gateway page. Routes outbound chat to Discord / Telegram /
+/// Slack / etc. — distinct from the v0.10 **Tool Gateway** (Nous Portal
+/// subscription routing for web search / image / TTS / browser), which
+/// lives under `Features/Health/`. The user-facing label here is always
+/// "Messaging Gateway"; the SwiftUI struct stays `GatewayView` because
+/// `ContentView` references it by name (rename-on-touch invariant —
+/// avoid churning unrelated callers).
 struct GatewayView: View {
-    @State private var viewModel: GatewayViewModel
+    @State private var viewModel: MessagingGatewayViewModel
     @Environment(HermesFileWatcher.self) private var fileWatcher
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
 
     init(context: ServerContext) {
-        _viewModel = State(initialValue: GatewayViewModel(context: context))
+        // Capabilities arrive via environment after init runs, so the VM
+        // is constructed with `.empty` and refreshed on first appear via
+        // `attach(capabilities:)`. Same pattern as the per-platform setup
+        // views — see `MessagingGatewayViewModel.capabilities` doc comment.
+        _viewModel = State(initialValue: MessagingGatewayViewModel(context: context))
     }
 
 
@@ -15,10 +27,15 @@ struct GatewayView: View {
         VStack(spacing: 0) {
             ScarfPageHeader(
                 "Messaging Gateway",
-                subtitle: "Outbound channel bridge — Discord, Telegram, Slack, etc."
+                subtitle: "Outbound channel bridge — Discord, Telegram, Slack, Google Chat, etc."
             )
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: ScarfSpace.s4) {
+                    if let snap = viewModel.gatewayList,
+                       viewModel.capabilities.hasGatewayList,
+                       !snap.profiles.isEmpty {
+                        crossProfileDigest(snap)
+                    }
                     serviceSection
                     platformsSection
                     pairingSection
@@ -29,14 +46,58 @@ struct GatewayView: View {
         }
         .background(ScarfColor.backgroundPrimary)
         .navigationTitle("Messaging Gateway")
-        .onAppear { viewModel.load() }
+        .onAppear {
+            attachCapabilitiesIfNeeded()
+            viewModel.load()
+        }
         .onChange(of: fileWatcher.lastChangeDate) { viewModel.load() }
+    }
+
+    /// Re-create the VM with the resolved capabilities the first time the
+    /// store hands us non-empty data. Same shape as `KanbanBoardView`'s
+    /// `attach` helper.
+    private func attachCapabilitiesIfNeeded() {
+        guard let store = capabilitiesStore,
+              store.capabilities.detected,
+              !viewModel.capabilities.detected else { return }
+        viewModel = MessagingGatewayViewModel(
+            context: viewModel.context,
+            capabilities: store.capabilities
+        )
+    }
+
+    // MARK: - v0.13 cross-profile digest
+
+    /// One-line summary above the gateway controls when the host is on
+    /// v0.13+ and `hermes gateway list --json` returned at least one
+    /// profile. Doubly-guarded — `hasGatewayList` AND `profiles != []`
+    /// — so a v0.13 host with no registered profiles doesn't render
+    /// an empty pill.
+    private func crossProfileDigest(_ snap: GatewayListSnapshot) -> some View {
+        HStack(spacing: ScarfSpace.s2) {
+            Image(systemName: "dot.radiowaves.left.and.right")
+                .foregroundStyle(ScarfColor.accent)
+            Text(snap.headerDigest)
+                .scarfStyle(.captionStrong)
+                .foregroundStyle(ScarfColor.foregroundPrimary)
+            Spacer()
+        }
+        .padding(.horizontal, ScarfSpace.s3)
+        .padding(.vertical, ScarfSpace.s2)
+        .background(
+            RoundedRectangle(cornerRadius: ScarfRadius.md, style: .continuous)
+                .fill(ScarfColor.backgroundSecondary)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: ScarfRadius.md, style: .continuous)
+                .strokeBorder(ScarfColor.border, lineWidth: 1)
+        )
     }
 
     // MARK: - Service
 
     private var serviceSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: ScarfSpace.s3) {
             HStack {
                 Text("Service")
                     .font(.headline)
@@ -46,15 +107,20 @@ struct GatewayView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                HStack(spacing: 8) {
+                HStack(spacing: ScarfSpace.s2) {
                     Button("Start") { viewModel.startGateway() }
+                        .buttonStyle(ScarfPrimaryButton())
+                        .controlSize(.small)
                     Button("Stop") { viewModel.stopGateway() }
+                        .buttonStyle(ScarfSecondaryButton())
+                        .controlSize(.small)
                     Button("Restart") { viewModel.restartGateway() }
+                        .buttonStyle(ScarfSecondaryButton())
+                        .controlSize(.small)
                 }
-                .controlSize(.small)
             }
 
-            HStack(spacing: 16) {
+            HStack(spacing: ScarfSpace.s3) {
                 StatusBadge(
                     label: viewModel.gateway.state,
                     isActive: viewModel.gateway.state == "running"
@@ -97,7 +163,7 @@ struct GatewayView: View {
     // MARK: - Platforms
 
     private var platformsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: ScarfSpace.s2) {
             Text("Platforms")
                 .font(.headline)
             if viewModel.gateway.platforms.isEmpty {
@@ -105,7 +171,7 @@ struct GatewayView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                HStack(spacing: 12) {
+                HStack(spacing: ScarfSpace.s3) {
                     ForEach(viewModel.gateway.platforms) { platform in
                         VStack(spacing: 6) {
                             Image(systemName: platform.icon)
@@ -119,9 +185,9 @@ struct GatewayView: View {
                             )
                         }
                         .frame(maxWidth: .infinity)
-                        .padding(12)
+                        .padding(ScarfSpace.s3)
                         .background(.quaternary.opacity(0.5))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .clipShape(RoundedRectangle(cornerRadius: ScarfRadius.md))
                     }
                 }
             }
@@ -131,12 +197,12 @@ struct GatewayView: View {
     // MARK: - Pairing
 
     private var pairingSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: ScarfSpace.s3) {
             Text("Paired Users")
                 .font(.headline)
 
             if !viewModel.pendingPairings.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: ScarfSpace.s2) {
                     Label("Pending Approvals", systemImage: "clock.badge.questionmark")
                         .font(.caption.bold())
                         .foregroundStyle(.orange)
@@ -150,12 +216,12 @@ struct GatewayView: View {
                                 viewModel.approvePairing(platform: pending.platform, code: pending.code)
                             }
                             .controlSize(.small)
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(ScarfPrimaryButton())
                         }
                         .font(.caption)
-                        .padding(8)
+                        .padding(ScarfSpace.s2)
                         .background(.orange.opacity(0.1))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .clipShape(RoundedRectangle(cornerRadius: ScarfRadius.sm))
                     }
                 }
             }
@@ -182,9 +248,9 @@ struct GatewayView: View {
                         }
                         .controlSize(.small)
                     }
-                    .padding(8)
+                    .padding(ScarfSpace.s2)
                     .background(.quaternary.opacity(0.3))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .clipShape(RoundedRectangle(cornerRadius: ScarfRadius.sm))
                 }
             }
         }

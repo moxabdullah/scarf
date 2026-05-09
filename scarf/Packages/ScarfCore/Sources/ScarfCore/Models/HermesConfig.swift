@@ -667,6 +667,17 @@ public struct HermesConfig: Sendable {
     /// useful for cost auditing and screen-recording demos.
     public var runtimeMetadataFooter: Bool
 
+    // -- Hermes v0.13 additions ----------------------------------------
+    // Per-platform Messaging Gateway settings dictionary keyed by Hermes
+    // platform identifier (`slack`, `telegram`, `matrix`, `mattermost`,
+    // `whatsapp`, `dingtalk`, `google-chat`). Populated only for platforms
+    // whose `gateway.platforms.<platform>.*` block exists in config.yaml —
+    // platforms without an explicit block don't appear in the dictionary.
+    // Editing surfaces (per-platform setup forms) read with a `?? .empty`
+    // fallback so a missing entry behaves identically to an all-default
+    // entry.
+    public var gatewayPlatforms: [String: GatewayPlatformSettings]
+
     // Grouped blocks
     public var display: DisplaySettings
     public var terminal: TerminalSettings
@@ -747,11 +758,13 @@ public struct HermesConfig: Sendable {
         homeAssistant: HomeAssistantSettings,
         cacheTTL: String = "5m",
         redactionEnabled: Bool = false,
-        runtimeMetadataFooter: Bool = false
+        runtimeMetadataFooter: Bool = false,
+        gatewayPlatforms: [String: GatewayPlatformSettings] = [:]
     ) {
         self.cacheTTL = cacheTTL
         self.redactionEnabled = redactionEnabled
         self.runtimeMetadataFooter = runtimeMetadataFooter
+        self.gatewayPlatforms = gatewayPlatforms
         self.model = model
         self.provider = provider
         self.maxTurns = maxTurns

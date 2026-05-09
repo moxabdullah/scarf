@@ -307,6 +307,16 @@ struct SkillsView: View {
                        case .missing(let hint) = designMdNpxStatus {
                         designMdNpxBanner(hint: hint)
                     }
+                    // v0.13 `[[as_document]]` directive — informational
+                    // only. Rendered when the skill body contains the
+                    // marker AND the host advertises Google Chat support
+                    // (cheap proxy: the directive shipped in v0.13
+                    // alongside Google Chat — see WS-5 plan §Q5/Q6).
+                    if (capabilitiesStore?.capabilities.hasGoogleChatPlatform ?? false),
+                       skillContentMentionsAsDocument {
+                        asDocumentInfoRow
+                    }
+
                     // v2.5 SKILL.md frontmatter chips. Render only the
                     // sections that are populated — old skills without
                     // this metadata show no extra rows.
@@ -400,6 +410,39 @@ struct SkillsView: View {
                 }
             }
         }
+    }
+
+    /// Returns true when the loaded skill body contains the v0.13
+    /// `[[as_document]]` directive. Substring scan over `skillContent`
+    /// — `[[as_document]]` is a literal token Hermes pattern-matches at
+    /// runtime, not a frontmatter key, so the body is the right place
+    /// to look. // TODO(WS-5-Q6): if Hermes ever moves the directive
+    /// into frontmatter, switch to `SkillFrontmatterParser` instead.
+    private var skillContentMentionsAsDocument: Bool {
+        viewModel.skillContent.contains("[[as_document]]")
+    }
+
+    /// Compact informational row about the `[[as_document]]` directive.
+    /// Does not block any action — it's a label so users understand why
+    /// images in the skill might land as document attachments on certain
+    /// platforms (Google Chat, Microsoft Teams) rather than inline.
+    private var asDocumentInfoRow: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "doc.badge.gearshape")
+                .foregroundStyle(.blue)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Document-attachment directive present (v0.13+)")
+                    .font(.caption.bold())
+                Text("Media in this skill marked with `[[as_document]]` is sent as document attachments instead of inline images on platforms that distinguish (Google Chat, Microsoft Teams).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.blue.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     /// Yellow banner surfaced on the design-md skill detail when the
