@@ -13,6 +13,7 @@ import ScarfDesign
 ///   tenant.
 struct KanbanBoardView: View {
     @State private var viewModel: KanbanBoardViewModel
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
 
     /// When non-nil, a project board hosts this view. Drives header
     /// chrome (subtitle, hidden tenant filter) and create-sheet
@@ -31,6 +32,15 @@ struct KanbanBoardView: View {
             projectPath: projectPath
         ))
         self.projectName = projectName
+    }
+
+    /// Convenience read for the v0.13 diagnostics flag — gates the
+    /// max_retries field, hallucination banner, diagnostics rendering,
+    /// and the auto-blocked reason banner. Pre-v0.13 hosts get the
+    /// v2.7.5 surface unchanged. Treats a missing store as "off" so
+    /// harness contexts (Previews) don't accidentally surface gated UI.
+    private var supportsKanbanDiagnostics: Bool {
+        capabilitiesStore?.capabilities.hasKanbanDiagnostics ?? false
     }
 
     @State private var inspectorTaskId: String?
@@ -71,7 +81,8 @@ struct KanbanBoardView: View {
             KanbanCreateSheet(
                 assignees: viewModel.assignees,
                 tenantPrefill: viewModel.tenantFilter,
-                projectWorkspacePath: viewModel.projectPath
+                projectWorkspacePath: viewModel.projectPath,
+                supportsKanbanDiagnostics: supportsKanbanDiagnostics
             ) { request in
                 _ = try await viewModel.createTask(request)
             }
@@ -188,7 +199,9 @@ struct KanbanBoardView: View {
                         onDrop: { ref in
                             handleDrop(ref.id, on: column)
                         },
-                        canCreate: column == .upNext || column == .triage
+                        canCreate: column == .upNext || column == .triage,
+                        supportsKanbanDiagnostics: supportsKanbanDiagnostics,
+                        effectiveHallucinationGate: { viewModel.effectiveHallucinationGate($0) }
                     )
                 }
                 Spacer(minLength: ScarfSpace.s4)
@@ -208,6 +221,8 @@ struct KanbanBoardView: View {
                 service: viewModel.service,
                 taskId: taskId,
                 availableAssignees: viewModel.assignees,
+                supportsKanbanDiagnostics: supportsKanbanDiagnostics,
+                effectiveHallucinationGate: { viewModel.effectiveHallucinationGate($0) },
                 onClose: { inspectorTaskId = nil },
                 onClaim: {
                     viewModel.attemptMove(taskId: taskId, to: .running)
@@ -232,6 +247,15 @@ struct KanbanBoardView: View {
                 },
                 onReassign: { profile in
                     viewModel.reassignTask(taskId: taskId, to: profile)
+                },
+                onVerifyHallucination: {
+                    viewModel.verifyHallucination(taskId: taskId)
+                },
+                onRejectHallucination: {
+                    viewModel.rejectHallucination(taskId: taskId)
+                    // Card vanishes from active board after archive — close
+                    // the inspector so it doesn't dangle on a deleted task.
+                    inspectorTaskId = nil
                 }
             )
         }

@@ -17,6 +17,15 @@ public struct KanbanCreateRequest: Sendable, Equatable {
     public var maxRuntimeSeconds: Int?
     public var createdBy: String?
     public var skills: [String]
+    /// v0.13: per-task retry budget. `--max-retries N` is write-once at
+    /// create time — no `set_max_retries` verb. Pass `nil` to let Hermes
+    /// pick its built-in default (3 as of v0.13.0). Capability-gated in
+    /// the create sheet on `hasKanbanDiagnostics`.
+    // TODO(WS-3-Q6): Confirm Hermes's global default for `max_retries`
+    // (v0.13 release notes don't enumerate it). The create sheet defaults
+    // the field to 3; if Hermes config exposes a different default, mirror
+    // it.
+    public var maxRetries: Int?
 
     public init(
         title: String,
@@ -30,7 +39,8 @@ public struct KanbanCreateRequest: Sendable, Equatable {
         idempotencyKey: String? = nil,
         maxRuntimeSeconds: Int? = nil,
         createdBy: String? = nil,
-        skills: [String] = []
+        skills: [String] = [],
+        maxRetries: Int? = nil
     ) {
         self.title = title
         self.body = body
@@ -44,6 +54,7 @@ public struct KanbanCreateRequest: Sendable, Equatable {
         self.maxRuntimeSeconds = maxRuntimeSeconds
         self.createdBy = createdBy
         self.skills = skills
+        self.maxRetries = maxRetries
     }
 
     /// Build the argv suffix this request maps to (everything after
@@ -77,6 +88,9 @@ public struct KanbanCreateRequest: Sendable, Equatable {
         }
         if let maxRuntimeSeconds {
             args.append(contentsOf: ["--max-runtime", "\(maxRuntimeSeconds)s"])
+        }
+        if let maxRetries {
+            args.append(contentsOf: ["--max-retries", String(maxRetries)])
         }
         if let createdBy, !createdBy.isEmpty {
             args.append(contentsOf: ["--created-by", createdBy])

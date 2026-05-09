@@ -55,9 +55,22 @@ final class KanbanBoardViewModel {
     var assigneeFilter: String?       // nil = all assignees
     var showArchived: Bool = false
 
-    /// Optimistic moves keyed by task id; cleared when the polled
-    /// response includes the same status the optimistic move set.
-    private var optimisticOverrides: [String: String] = [:]
+    /// Optimistic in-flight overrides keyed by task id; cleared when the
+    /// polled response confirms the new state.
+    /// - Status side: drag-drop column moves.
+    /// - Hallucination-gate side (v0.13): Verify clicks flip `pending` →
+    ///   `verified` locally so the banner disappears immediately.
+    /// The override entry is dropped from the dictionary entirely once
+    /// both sides are nil (no override needed).
+    private struct OptimisticOverride {
+        var status: String?
+        var hallucinationGate: KanbanHallucinationGate?
+
+        var isEmpty: Bool {
+            status == nil && hallucinationGate == nil
+        }
+    }
+    private var optimisticOverrides: [String: OptimisticOverride] = [:]
     /// Tasks dropped into invalid columns produce a transient "denied"
     /// banner. Stored as an explicit error to support the Cmd-Z style
     /// undo we don't ship in v2.7.5 but want to leave room for.
@@ -177,8 +190,10 @@ final class KanbanBoardViewModel {
         // Optimistic mutation — flip the local row's status to a
         // value within the destination column's range. We pick a
         // representative status per column.
-        let optimisticStatus = optimisticStatus(for: destination)
-        optimisticOverrides[taskId] = optimisticStatus
+        let optimisticStatusValue = optimisticStatus(for: destination)
+        var override = optimisticOverrides[taskId] ?? OptimisticOverride()
+        override.status = optimisticStatusValue
+        optimisticOverrides[taskId] = override
 
         let svc = service
         Task {
@@ -190,11 +205,11 @@ final class KanbanBoardViewModel {
                 // without waiting for the 5s tick.
                 await refresh()
             } catch let err as KanbanError {
-                optimisticOverrides.removeValue(forKey: taskId)
+                clearStatusOverride(for: taskId)
                 lastError = err.errorDescription
                 logger.warning("kanban move failed: \(err.errorDescription ?? "", privacy: .public)")
             } catch {
-                optimisticOverrides.removeValue(forKey: taskId)
+                clearStatusOverride(for: taskId)
                 lastError = error.localizedDescription
             }
         }
@@ -269,6 +284,48 @@ final class KanbanBoardViewModel {
         return task
     }
 
+    // MARK: - Hallucination gate (v0.13)
+
+    /// User confirmed the worker-created card is real. Optimistically
+    /// flip the gate to `verified` so the banner disappears immediately;
+    /// the polling loop confirms the new state on the next tick. On
+    /// failure (e.g. the verb name is wrong on this v0.13.x build), the
+    /// override is cleared and the error surfaces in `lastError`.
+    func verifyHallucination(taskId: String) {
+        var override = optimisticOverrides[taskId] ?? OptimisticOverride()
+        override.hallucinationGate = .verified
+        optimisticOverrides[taskId] = override
+        Task {
+            do {
+                try await service.verify(taskId: taskId)
+                await refresh()
+            } catch let err as KanbanError {
+                clearHallucinationOverride(for: taskId)
+                lastError = err.errorDescription
+                logger.warning("kanban verify failed: \(err.errorDescription ?? "", privacy: .public)")
+            } catch {
+                clearHallucinationOverride(for: taskId)
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    /// User rejected the worker-created card as a hallucinated reference.
+    /// Routes through `comment` + `archive` per `KanbanService.rejectHallucinated`
+    /// so there's an audit trail for why the card disappeared.
+    func rejectHallucination(taskId: String) {
+        Task {
+            do {
+                try await service.rejectHallucinated(taskId: taskId)
+                await refresh()
+            } catch let err as KanbanError {
+                lastError = err.errorDescription
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
     // MARK: - Private helpers
 
     private func mergePolledTasks(_ polled: [HermesKanbanTask]) {
@@ -282,25 +339,75 @@ final class KanbanBoardViewModel {
             filtered = polled
         }
         let presentIds = Set(filtered.map(\.id))
-        // Drop optimistic overrides for tasks Hermes confirmed.
-        for (id, optimistic) in optimisticOverrides {
-            if let row = filtered.first(where: { $0.id == id }) {
-                if columnFromStatus(optimistic) == columnFromStatus(row.status) {
+        // Drop optimistic overrides for tasks Hermes confirmed. Two
+        // independent sides — clear them separately so a Verify click
+        // still in-flight survives a status-side poll confirmation, and
+        // vice versa.
+        for (id, override) in optimisticOverrides {
+            guard let row = filtered.first(where: { $0.id == id }) else {
+                if !presentIds.contains(id) {
+                    // Task no longer in the polled set (archived, deleted,
+                    // or filtered out). Drop the override entirely.
                     optimisticOverrides.removeValue(forKey: id)
                 }
-            } else if !presentIds.contains(id) {
-                // Task no longer in the polled set (archived, deleted,
-                // or filtered out). Drop the optimistic entry.
+                continue
+            }
+            // Status side — optimistic move confirmed.
+            if let optStatus = override.status,
+               columnFromStatus(optStatus) == columnFromStatus(row.status) {
+                optimisticOverrides[id]?.status = nil
+            }
+            // Hallucination-gate side — optimistic verify/reject confirmed.
+            if let optGate = override.hallucinationGate,
+               KanbanHallucinationGate.from(row.hallucinationGateStatus) == optGate {
+                optimisticOverrides[id]?.hallucinationGate = nil
+            }
+            if optimisticOverrides[id]?.isEmpty ?? true {
                 optimisticOverrides.removeValue(forKey: id)
             }
         }
         tasks = filtered
     }
 
+    /// Drop the status side of a task's override (preserving any
+    /// in-flight hallucination-gate optimistic state).
+    private func clearStatusOverride(for taskId: String) {
+        guard var override = optimisticOverrides[taskId] else { return }
+        override.status = nil
+        if override.isEmpty {
+            optimisticOverrides.removeValue(forKey: taskId)
+        } else {
+            optimisticOverrides[taskId] = override
+        }
+    }
+
+    /// Drop the hallucination-gate side of a task's override (preserving
+    /// any in-flight status-side drag-drop).
+    private func clearHallucinationOverride(for taskId: String) {
+        guard var override = optimisticOverrides[taskId] else { return }
+        override.hallucinationGate = nil
+        if override.isEmpty {
+            optimisticOverrides.removeValue(forKey: taskId)
+        } else {
+            optimisticOverrides[taskId] = override
+        }
+    }
+
+    /// Effective hallucination gate for a task — the optimistic override
+    /// wins if one is in flight; otherwise the polled value. View code
+    /// reads through this so the banner / dim state matches the moment-
+    /// after-click experience.
+    func effectiveHallucinationGate(_ task: HermesKanbanTask) -> KanbanHallucinationGate? {
+        if let override = optimisticOverrides[task.id]?.hallucinationGate {
+            return override
+        }
+        return KanbanHallucinationGate.from(task.hallucinationGateStatus)
+    }
+
     /// Return the effective board column for a task — the optimistic
     /// override wins if one is in flight; otherwise the polled status.
     private func effectiveColumn(_ task: HermesKanbanTask) -> KanbanBoardColumn {
-        if let overrideStatus = optimisticOverrides[task.id] {
+        if let overrideStatus = optimisticOverrides[task.id]?.status {
             return columnFromStatus(overrideStatus)
         }
         return columnFromStatus(task.status)

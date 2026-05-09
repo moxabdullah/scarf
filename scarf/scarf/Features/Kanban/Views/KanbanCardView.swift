@@ -24,11 +24,39 @@ struct KanbanTaskRef: Transferable {
 /// - **Running** gets a blue left-edge accent + live shimmer
 /// - **Blocked** gets a warning left-edge accent + ⚠ glyph
 /// - **Done** dims to 0.7 opacity (0.55 in dark mode)
+/// - **Hallucination-gate pending** (v0.13+) dims to 0.6 + ⚠ glyph and
+///   shows a one-line auto-blocked reason in the footer when present.
 struct KanbanCardView: View {
     let task: HermesKanbanTask
     let onTap: () -> Void
+    /// True when the connected Hermes is on v0.13+ — gates the
+    /// hallucination dim/glyph, auto-block sub-line, and diagnostics
+    /// dot on the card. Pre-v0.13 hosts see the v2.7.5 chrome unchanged.
+    let supportsKanbanDiagnostics: Bool
+    /// Optimistic-aware accessor. Pre-v0.13 always nil. Otherwise delegates
+    /// to the board VM so a Verify click un-dims the card immediately.
+    let effectiveHallucinationGate: (HermesKanbanTask) -> KanbanHallucinationGate?
+
+    init(
+        task: HermesKanbanTask,
+        supportsKanbanDiagnostics: Bool = false,
+        effectiveHallucinationGate: @escaping (HermesKanbanTask) -> KanbanHallucinationGate? = { _ in nil },
+        onTap: @escaping () -> Void
+    ) {
+        self.task = task
+        self.supportsKanbanDiagnostics = supportsKanbanDiagnostics
+        self.effectiveHallucinationGate = effectiveHallucinationGate
+        self.onTap = onTap
+    }
 
     @Environment(\.colorScheme) private var colorScheme
+
+    /// Cached gate read — derived once per body eval rather than recomputed
+    /// in each subview helper.
+    private var hallucinationGate: KanbanHallucinationGate? {
+        guard supportsKanbanDiagnostics else { return nil }
+        return effectiveHallucinationGate(task)
+    }
 
     var body: some View {
         Button(action: onTap) {
@@ -66,11 +94,20 @@ struct KanbanCardView: View {
         }
         .buttonStyle(.plain)
         .scarfShadow(.sm)
-        .opacity(task.isDone ? doneOpacity : 1.0)
+        // v0.13: hallucination-pending cards dim to 0.6 to signal "needs
+        // verification before running" without making them unreadable.
+        // Done cards stay at the established doneOpacity (0.7 / 0.55).
+        .opacity(cardOpacity)
         .draggable(KanbanTaskRef(id: task.id)) {
             // Drag preview — the live card with a heavier shadow.
             self.dragPreview
         }
+    }
+
+    private var cardOpacity: Double {
+        if task.isDone { return doneOpacity }
+        if hallucinationGate == .pending { return 0.6 }
+        return 1.0
     }
 
     private var titleRow: some View {
@@ -82,7 +119,15 @@ struct KanbanCardView: View {
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
             Spacer(minLength: 0)
-            if needsAssignmentWarning {
+            // v0.13 hallucination glyph takes precedence over the
+            // unassigned glyph — the hallucination state is the more
+            // specific signal (a worker created this card; verify it).
+            if hallucinationGate == .pending {
+                Image(systemName: "questionmark.diamond.fill")
+                    .foregroundStyle(ScarfColor.warning)
+                    .font(.system(size: 11, weight: .semibold))
+                    .help("Worker-created — verify before running")
+            } else if needsAssignmentWarning {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(ScarfColor.warning)
                     .font(.system(size: 11, weight: .semibold))
@@ -186,13 +231,37 @@ struct KanbanCardView: View {
     }
 
     private var footerRow: some View {
-        HStack(spacing: ScarfSpace.s2) {
-            Text(relativeTimeLabel)
-                .scarfStyle(.caption)
-                .foregroundStyle(ScarfColor.foregroundFaint)
-            Spacer(minLength: 0)
-            if let priority = task.priority, priority >= 70 {
-                priorityIndicator(priority)
+        VStack(alignment: .leading, spacing: 2) {
+            // v0.13: server-supplied auto-blocked reason. Renders verbatim
+            // (truncated to one line; full reason in the inspector).
+            // Pre-v0.13 hosts always have task.autoBlockedReason == nil.
+            if supportsKanbanDiagnostics,
+               KanbanStatus.from(task.status) == .blocked,
+               let reason = task.autoBlockedReason, !reason.isEmpty {
+                Text(reason)
+                    .scarfStyle(.caption)
+                    .foregroundStyle(ScarfColor.danger)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(reason)
+            }
+            HStack(spacing: ScarfSpace.s2) {
+                Text(relativeTimeLabel)
+                    .scarfStyle(.caption)
+                    .foregroundStyle(ScarfColor.foregroundFaint)
+                Spacer(minLength: 0)
+                // v0.13: diagnostics dot — small stethoscope glyph when
+                // any cross-run distress signal is attached. Matches the
+                // chip count in the inspector.
+                if supportsKanbanDiagnostics, !task.diagnostics.isEmpty {
+                    Image(systemName: "stethoscope")
+                        .font(.system(size: 9))
+                        .foregroundStyle(ScarfColor.warning)
+                        .help("\(task.diagnostics.count) diagnostic signal\(task.diagnostics.count == 1 ? "" : "s")")
+                }
+                if let priority = task.priority, priority >= 70 {
+                    priorityIndicator(priority)
+                }
             }
         }
     }

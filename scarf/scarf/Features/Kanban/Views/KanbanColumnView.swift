@@ -17,6 +17,38 @@ struct KanbanColumnView: View {
     let onCreate: () -> Void
     let onDrop: (KanbanTaskRef) -> Void
     let canCreate: Bool
+    /// True when the connected Hermes is on v0.13+. Forwarded to each
+    /// `KanbanCardView` so the hallucination dim/glyph + diagnostics dot
+    /// + auto-block sub-line gate uniformly.
+    let supportsKanbanDiagnostics: Bool
+    /// Optimistic-aware accessor forwarded to cards. Default is
+    /// "no override" so Previews and harness contexts still render
+    /// without wiring up a board VM.
+    let effectiveHallucinationGate: (HermesKanbanTask) -> KanbanHallucinationGate?
+
+    init(
+        column: KanbanBoardColumn,
+        tasks: [HermesKanbanTask],
+        isLive: Bool,
+        readyPillCount: Int,
+        onTaskTap: @escaping (HermesKanbanTask) -> Void,
+        onCreate: @escaping () -> Void,
+        onDrop: @escaping (KanbanTaskRef) -> Void,
+        canCreate: Bool,
+        supportsKanbanDiagnostics: Bool = false,
+        effectiveHallucinationGate: @escaping (HermesKanbanTask) -> KanbanHallucinationGate? = { _ in nil }
+    ) {
+        self.column = column
+        self.tasks = tasks
+        self.isLive = isLive
+        self.readyPillCount = readyPillCount
+        self.onTaskTap = onTaskTap
+        self.onCreate = onCreate
+        self.onDrop = onDrop
+        self.canCreate = canCreate
+        self.supportsKanbanDiagnostics = supportsKanbanDiagnostics
+        self.effectiveHallucinationGate = effectiveHallucinationGate
+    }
 
     @State private var isTargeted = false
 
@@ -36,7 +68,11 @@ struct KanbanColumnView: View {
                             .padding(.top, ScarfSpace.s4)
                     } else {
                         ForEach(tasks) { task in
-                            KanbanCardView(task: task) {
+                            KanbanCardView(
+                                task: task,
+                                supportsKanbanDiagnostics: supportsKanbanDiagnostics,
+                                effectiveHallucinationGate: effectiveHallucinationGate
+                            ) {
                                 onTaskTap(task)
                             }
                         }

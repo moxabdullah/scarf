@@ -321,6 +321,61 @@ public actor KanbanService {
         try ensureSuccess(code: code, stdout: "", stderr: stderr, verb: "unlink")
     }
 
+    // MARK: - Hallucination gate (v0.13)
+
+    /// Mark a worker-created card as user-verified — flips
+    /// `hallucination_gate_status` from `pending` to `verified` so the
+    /// dispatcher can pick it up. The polling loop picks up the new
+    /// state on the next tick (and the VM optimistically clears the
+    /// pending banner immediately on the click).
+    ///
+    /// **Pre-v0.13 hosts:** the verb doesn't exist; callers MUST gate
+    /// on `HermesCapabilities.hasKanbanDiagnostics` before invoking this.
+    /// A pre-v0.13 binary will surface the failure as
+    /// `KanbanError.nonZeroExit` with stderr containing "unknown command".
+    // TODO(WS-3-Q1): Confirm the exact CLI verb name for the
+    // hallucination-gate verify path against a v0.13 binary (`hermes
+    // kanban --help`). The v0.13 release notes describe "hallucination
+    // gate + recovery UX" but don't enumerate the verb name. This
+    // implementation assumes `hermes kanban verify <id>`. If Hermes ships
+    // it as `hermes kanban gate verify <id>`, `hermes kanban hallucination
+    // verify <id>`, or another name, update the args here. The Reject
+    // path does NOT depend on this verb (it routes through
+    // `archive` + a comment), so the recovery UX stays functional even
+    // if Verify is a stub for an early v0.13.x.
+    public func verify(taskId: String) async throws {
+        let args = ["kanban", "verify", taskId]
+        let (code, _, stderr) = await runHermes(args: args, timeout: 15)
+        try ensureSuccess(code: code, stdout: "", stderr: stderr, verb: "verify")
+    }
+
+    /// Reject a worker-created card as a hallucinated reference. There
+    /// is no dedicated `kanban reject` verb in v0.13; the right action
+    /// per the v0.13 release notes is to archive the card (the work
+    /// doesn't exist) with a comment recording the rejection reason for
+    /// the audit trail. Routing this through the existing `comment` +
+    /// `archive` verbs keeps the wire shape stable across versions.
+    ///
+    /// If a future Hermes adds a dedicated `kanban reject` verb, swap
+    /// the body here — the public surface stays "reject" returning Void.
+    public func rejectHallucinated(taskId: String) async throws {
+        // Best-effort comment first so the audit trail records the
+        // rejection. A failure here shouldn't block the archive — log
+        // and continue.
+        do {
+            try await comment(
+                taskId: taskId,
+                text: "Rejected as hallucinated (no underlying work).",
+                author: nil
+            )
+        } catch {
+            #if canImport(os)
+            Self.logger.warning("kanban reject: comment failed, proceeding to archive (\(error.localizedDescription, privacy: .public))")
+            #endif
+        }
+        try await archive(taskIds: [taskId])
+    }
+
     // MARK: - Drag-drop transition mapper
 
     /// Map a board-level column transition to the right Hermes verb call.

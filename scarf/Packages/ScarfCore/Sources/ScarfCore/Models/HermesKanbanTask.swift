@@ -9,8 +9,9 @@ import Foundation
 /// `link`/`unlink`, `comment`, `dispatch`).
 ///
 /// Hermes has no `update` verb — `priority` / `title` / `body` /
-/// `tenant` are write-once at create time. Mutations after that are
-/// expressed as state transitions (status, assignee) or new comments.
+/// `tenant` / `max_retries` are write-once at create time. Mutations
+/// after that are expressed as state transitions (status, assignee) or
+/// new comments.
 public struct HermesKanbanTask: Sendable, Equatable, Identifiable, Codable {
     public let id: String
     public let title: String
@@ -34,6 +35,29 @@ public struct HermesKanbanTask: Sendable, Equatable, Identifiable, Codable {
     public let maxRuntimeSeconds: Int?
     public let currentRunId: Int?
 
+    // v0.13 (v2026.5.7) reliability + recovery fields. All Optional with
+    // `nil` decoded for pre-v0.13 hosts so the v2.7.5 surface keeps
+    // rendering unchanged when the connected Hermes hasn't shipped them.
+    /// Per-task retry budget set at create time via `--max-retries N`.
+    /// Hermes pattern is write-once — no `set_max_retries` verb. Scarf
+    /// surfaces this read-only on the inspector header.
+    public let maxRetries: Int?
+    /// Server-supplied reason a task was auto-blocked (e.g. "worker
+    /// exited (code 0) without calling `kanban complete`"). Surfaced
+    /// verbatim in the inspector banner.
+    public let autoBlockedReason: String?
+    /// `pending` / `verified` / `rejected` / nil. Pending means a worker
+    /// claimed it created this card but Hermes hasn't confirmed the
+    /// underlying work exists. Read through `KanbanHallucinationGate.from`
+    /// to map to a typed mirror — kept as a String at the wire level so
+    /// Hermes can add new gate states (e.g. `quarantined`) without a
+    /// Scarf release.
+    public let hallucinationGateStatus: String?
+    /// Cross-run distress signals (retry cap hit, etc.). Per-run signals
+    /// hang off `HermesKanbanRun.diagnostics`. Empty array for pre-v0.13
+    /// hosts AND for tasks the diagnostics engine hasn't flagged.
+    public let diagnostics: [HermesKanbanDiagnostic]
+
     public init(
         id: String,
         title: String,
@@ -53,7 +77,11 @@ public struct HermesKanbanTask: Sendable, Equatable, Identifiable, Codable {
         idempotencyKey: String? = nil,
         lastHeartbeatAt: String? = nil,
         maxRuntimeSeconds: Int? = nil,
-        currentRunId: Int? = nil
+        currentRunId: Int? = nil,
+        maxRetries: Int? = nil,
+        autoBlockedReason: String? = nil,
+        hallucinationGateStatus: String? = nil,
+        diagnostics: [HermesKanbanDiagnostic] = []
     ) {
         self.id = id
         self.title = title
@@ -74,6 +102,10 @@ public struct HermesKanbanTask: Sendable, Equatable, Identifiable, Codable {
         self.lastHeartbeatAt = lastHeartbeatAt
         self.maxRuntimeSeconds = maxRuntimeSeconds
         self.currentRunId = currentRunId
+        self.maxRetries = maxRetries
+        self.autoBlockedReason = autoBlockedReason
+        self.hallucinationGateStatus = hallucinationGateStatus
+        self.diagnostics = diagnostics
     }
 
     enum CodingKeys: String, CodingKey {
@@ -89,6 +121,10 @@ public struct HermesKanbanTask: Sendable, Equatable, Identifiable, Codable {
         case lastHeartbeatAt = "last_heartbeat_at"
         case maxRuntimeSeconds = "max_runtime_seconds"
         case currentRunId = "current_run_id"
+        case maxRetries = "max_retries"
+        case autoBlockedReason = "auto_blocked_reason"
+        case hallucinationGateStatus = "hallucination_gate_status"
+        case diagnostics
     }
 
     public init(from decoder: any Decoder) throws {
@@ -117,6 +153,17 @@ public struct HermesKanbanTask: Sendable, Equatable, Identifiable, Codable {
         self.lastHeartbeatAt = try Self.decodeFlexibleTimestamp(c, forKey: .lastHeartbeatAt)
         self.maxRuntimeSeconds = try c.decodeIfPresent(Int.self, forKey: .maxRuntimeSeconds)
         self.currentRunId = try c.decodeIfPresent(Int.self, forKey: .currentRunId)
+        // v0.13 fields — every one is `decodeIfPresent` so a v0.12 host's
+        // task row decodes successfully with these all nil/empty. The
+        // tolerant-decode contract is pinned by KanbanModelsTests.
+        self.maxRetries = try c.decodeIfPresent(Int.self, forKey: .maxRetries)
+        self.autoBlockedReason = try c.decodeIfPresent(String.self, forKey: .autoBlockedReason)
+        self.hallucinationGateStatus = try c.decodeIfPresent(String.self, forKey: .hallucinationGateStatus)
+        // Wrap diagnostics decode in `try?` so a single malformed entry
+        // (or the whole array being the wrong shape) doesn't poison the
+        // task row — the rest of the decoder still produces a usable
+        // task. Empty default matches the `skills` pattern.
+        self.diagnostics = (try? c.decodeIfPresent([HermesKanbanDiagnostic].self, forKey: .diagnostics)) ?? []
     }
 
     /// Decode a timestamp that may arrive as a Unix integer or an
@@ -208,4 +255,28 @@ public enum KanbanBoardColumn: String, Sendable, CaseIterable, Identifiable {
     public static let defaultVisible: [KanbanBoardColumn] = [
         .triage, .upNext, .running, .blocked, .done
     ]
+}
+
+// MARK: - Hallucination gate (v0.13)
+
+/// Typed mirror of Hermes v0.13's hallucination-gate state. Worker-created
+/// cards land in `pending` until something verifies the underlying work
+/// exists; Scarf surfaces a Verify / Reject UX above the task body so the
+/// user can act as the verification gate.
+///
+/// Kept separate from `KanbanStatus` because hallucination state is
+/// orthogonal to the lifecycle — a card can be `ready` *and* `pending`,
+/// for example.
+public enum KanbanHallucinationGate: String, Sendable, CaseIterable {
+    case pending
+    case verified
+    case rejected
+
+    /// Map a raw `hallucination_gate_status` string (case-insensitive) to
+    /// a typed gate. Returns nil for empty/nil/unknown values so callers
+    /// can short-circuit "no gate" branches with `if let gate = …`.
+    public static func from(_ raw: String?) -> KanbanHallucinationGate? {
+        guard let raw, !raw.isEmpty else { return nil }
+        return KanbanHallucinationGate(rawValue: raw.lowercased())
+    }
 }
