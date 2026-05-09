@@ -9,6 +9,13 @@ import Foundation
 
     // MARK: - Version line parsing
 
+    @Test func parseV013ReleaseLine() {
+        let caps = HermesCapabilities.parseLine("Hermes Agent v0.13.0 (2026.5.7)")
+        #expect(caps.semver == HermesCapabilities.SemVer(major: 0, minor: 13, patch: 0))
+        #expect(caps.dateVersion == HermesCapabilities.DateVersion(year: 2026, month: 5, day: 7))
+        #expect(caps.detected)
+    }
+
     @Test func parseV012ReleaseLine() {
         let caps = HermesCapabilities.parseLine("Hermes Agent v0.12.0 (2026.4.30)")
         #expect(caps.semver == HermesCapabilities.SemVer(major: 0, minor: 12, patch: 0))
@@ -75,8 +82,42 @@ import Foundation
 
     // MARK: - Capability flags
 
+    @Test func v013FlagsAllOn() {
+        let caps = HermesCapabilities.parseLine("Hermes Agent v0.13.0 (2026.5.7)")
+        // v0.12 surfaces remain on.
+        #expect(caps.hasCurator)
+        #expect(caps.hasKanban)
+        #expect(caps.hasACPImagePrompts)
+        #expect(!caps.hasFlushMemoriesAux)
+        // v0.13 surfaces light up.
+        #expect(caps.hasGoals)
+        #expect(caps.hasACPQueue)
+        #expect(caps.hasACPSteerOnIdle)
+        #expect(caps.hasKanbanDiagnostics)
+        #expect(caps.hasCuratorArchive)
+        #expect(caps.hasGoogleChatPlatform)
+        #expect(caps.hasGatewayAllowlists)
+        #expect(caps.hasGatewayBusyAckToggle)
+        #expect(caps.hasGatewayRestartNotification)
+        #expect(caps.hasGatewayList)
+        #expect(caps.hasMCPSSETransport)
+        #expect(caps.hasCronNoAgent)
+        #expect(caps.hasWebToolsBackendSplit)
+        #expect(caps.hasProfileNoSkills)
+        #expect(caps.hasContextCompressionCount)
+        #expect(caps.hasNewWithSessionName)
+        #expect(caps.hasUpdateNonInteractive)
+        #expect(caps.hasOpenRouterResponseCache)
+        #expect(caps.hasImageGenModel)
+        #expect(caps.hasDisplayLanguage)
+        #expect(caps.hasXAIVoiceCloning)
+        #expect(caps.hasVideoAnalyze)
+        #expect(caps.hasTransformLLMOutputHook)
+    }
+
     @Test func v012FlagsAllOn() {
         let caps = HermesCapabilities.parseLine("Hermes Agent v0.12.0 (2026.4.30)")
+        // v0.12 surfaces on.
         #expect(caps.hasCurator)
         #expect(caps.hasFallbackCommand)
         #expect(caps.hasKanban)
@@ -94,6 +135,22 @@ import Foundation
         #expect(caps.hasRedactionToggle)
         // flush_memories was REMOVED in v0.12 — flag inverts.
         #expect(!caps.hasFlushMemoriesAux)
+        // v0.13 surfaces stay off on a v0.12 host.
+        #expect(!caps.hasGoals)
+        #expect(!caps.hasACPQueue)
+        #expect(!caps.hasKanbanDiagnostics)
+        #expect(!caps.hasCuratorArchive)
+        #expect(!caps.hasGoogleChatPlatform)
+        #expect(!caps.hasGatewayAllowlists)
+        #expect(!caps.hasMCPSSETransport)
+        #expect(!caps.hasCronNoAgent)
+        #expect(!caps.hasWebToolsBackendSplit)
+        #expect(!caps.hasProfileNoSkills)
+        #expect(!caps.hasContextCompressionCount)
+        #expect(!caps.hasOpenRouterResponseCache)
+        #expect(!caps.hasImageGenModel)
+        #expect(!caps.hasDisplayLanguage)
+        #expect(!caps.hasXAIVoiceCloning)
     }
 
     @Test func v011FlagsAllOff() {
@@ -126,11 +183,45 @@ import Foundation
     }
 
     @Test func futureVersionRetainsCapabilities() {
-        // A v0.13 (hypothetical) should still see all v0.12 capabilities on.
-        let caps = HermesCapabilities.parseLine("Hermes Agent v0.13.0 (2026.6.1)")
+        // A v0.14 (hypothetical) should still see all v0.12 + v0.13 capabilities on.
+        let caps = HermesCapabilities.parseLine("Hermes Agent v0.14.0 (2026.7.1)")
         #expect(caps.hasCurator)
         #expect(caps.hasACPImagePrompts)
+        #expect(caps.hasGoals)
+        #expect(caps.hasKanbanDiagnostics)
+        #expect(caps.hasCuratorArchive)
         // And flush_memories stays gone.
         #expect(!caps.hasFlushMemoriesAux)
+    }
+
+    @Test func v0_13_patchReleaseStillEnablesAllFlags() {
+        // A v0.13.4 patch release should still enable every v0.13 flag.
+        let caps = HermesCapabilities.parseLine("Hermes Agent v0.13.4 (2026.5.20)")
+        #expect(caps.hasGoals)
+        #expect(caps.hasACPQueue)
+        #expect(caps.hasKanbanDiagnostics)
+        #expect(caps.hasGoogleChatPlatform)
+    }
+
+    // MARK: - isV013OrLater convenience predicate
+
+    @Test func isV013OrLater_v013HostTrue() {
+        let caps = HermesCapabilities.parseLine("Hermes Agent v0.13.0 (2026.5.7)")
+        #expect(caps.isV013OrLater)
+    }
+
+    @Test func isV013OrLater_v012HostFalse() {
+        let caps = HermesCapabilities.parseLine("Hermes Agent v0.12.0 (2026.4.30)")
+        #expect(!caps.isV013OrLater)
+    }
+
+    @Test func isV013OrLater_emptyFalse() {
+        let caps = HermesCapabilities.empty
+        #expect(!caps.isV013OrLater)
+    }
+
+    @Test func isV013OrLater_v014HostTrue() {
+        let caps = HermesCapabilities.parseLine("Hermes Agent v0.14.0 (2026.7.1)")
+        #expect(caps.isV013OrLater)
     }
 }
