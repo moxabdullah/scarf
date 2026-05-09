@@ -5,6 +5,33 @@ import ScarfDesign
 struct PlatformsView: View {
     @State private var viewModel: PlatformsViewModel
     @Environment(HermesFileWatcher.self) private var fileWatcher
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
+
+    /// Capabilities resolved at view-eval time. Defaults to `.empty` outside
+    /// the per-server `ContextBoundRoot`. Used to filter `KnownPlatforms.all`
+    /// for v0.13-only entries (Google Chat) — see `visiblePlatforms` for
+    /// the deliberate asymmetry: pre-v0.12 hosts still see Yuanbao + Teams
+    /// unfiltered, by design.
+    private var capabilities: HermesCapabilities {
+        capabilitiesStore?.capabilities ?? .empty
+    }
+
+    /// Capability-filtered platform list. Today only **Google Chat** is
+    /// gated — Yuanbao and Microsoft Teams stay unfiltered to avoid
+    /// changing v0.12 host UX in a v0.13 work-stream (WS-5 plan §Q4).
+    /// If we later decide to gate the v0.12 platforms too, add their
+    /// flags here; the `default: true` arm keeps every other platform
+    /// visible.
+    private var visiblePlatforms: [HermesToolPlatform] {
+        KnownPlatforms.all.filter { p in
+            switch p.name {
+            case "google-chat", "googlechat":
+                return capabilities.hasGoogleChatPlatform
+            default:
+                return true
+            }
+        }
+    }
 
     init(context: ServerContext) {
         _viewModel = State(initialValue: PlatformsViewModel(context: context))
@@ -40,12 +67,12 @@ struct PlatformsView: View {
             List(selection: Binding(
                 get: { viewModel.selected.name },
                 set: { name in
-                    if let p = viewModel.platforms.first(where: { $0.name == name }) {
+                    if let p = visiblePlatforms.first(where: { $0.name == name }) {
                         viewModel.selected = p
                     }
                 }
             )) {
-                ForEach(viewModel.platforms) { platform in
+                ForEach(visiblePlatforms) { platform in
                     HStack(spacing: 8) {
                         Image(systemName: KnownPlatforms.icon(for: platform.name))
                             .frame(width: 20)
@@ -149,6 +176,7 @@ struct PlatformsView: View {
         case "webhook":        WebhookSetupView(context: ctx)
         case "yuanbao":        yuanbaoPanel
         case "microsoft-teams": microsoftTeamsPanel
+        case "google-chat", "googlechat": googleChatPanel
         default:
             SettingsSection(title: LocalizedStringKey(viewModel.selected.displayName), icon: KnownPlatforms.icon(for: viewModel.selected.name)) {
                 ReadOnlyRow(label: "Setup", value: "No setup form for this platform yet.")
@@ -177,6 +205,27 @@ struct PlatformsView: View {
             ReadOnlyRow(label: "Type", value: "Plugin-shipped gateway platform (v0.12+)")
             ReadOnlyRow(label: "Setup", value: "Install the plugin from the Plugins tab, then run `hermes setup` to register the bot.")
             ReadOnlyRow(label: "Configured", value: viewModel.hasConfigBlock(for: viewModel.selected) ? "Yes" : "No")
+        }
+    }
+
+    /// Hermes v0.13 — Google Chat is the 20th gateway platform. Like
+    /// Yuanbao + Microsoft Teams, the auth dance is OAuth-style and
+    /// lives outside Scarf, so the panel surfaces the setup verb rather
+    /// than a per-field form. The `GatewayBehaviorSection` below it picks
+    /// up the v0.13 allowlist + behavior toggles, capability-gated.
+    @ViewBuilder
+    private var googleChatPanel: some View {
+        VStack(alignment: .leading, spacing: ScarfSpace.s3) {
+            SettingsSection(title: "Google Chat", icon: KnownPlatforms.icon(for: "google-chat")) {
+                ReadOnlyRow(label: "Type", value: "Generic env-driven gateway adapter (v0.13+)")
+                ReadOnlyRow(label: "Setup", value: "Run `hermes setup` and select Google Chat to walk the OAuth flow.")
+                ReadOnlyRow(label: "Configured", value: viewModel.hasConfigBlock(for: viewModel.selected) ? "Yes" : "No")
+            }
+            GatewayBehaviorSection(
+                platform: "google-chat",
+                capabilities: capabilities,
+                context: viewModel.context
+            )
         }
     }
 

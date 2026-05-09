@@ -254,6 +254,47 @@ struct HermesFileService: Sendable {
             cooldownSeconds: int("platforms.homeassistant.extra.cooldown_seconds", default: 30)
         )
 
+        // -- v0.13: per-platform Messaging Gateway settings --------------
+        // Mirrors the canonical extractor in
+        // `ScarfCore/Parsing/HermesConfig+YAML.swift`. Behaviour parity
+        // matters: both parsers must populate `gatewayPlatforms` the same
+        // way so iOS and Mac surfaces stay in lockstep.
+        // TODO(WS-5-Q2): YAML key path unverified — see the comment in the
+        // ScarfCore extractor for the resolution path.
+        let gatewayAllowlistPlatforms = [
+            "slack", "mattermost", "google-chat",
+            "telegram", "whatsapp",
+            "matrix", "dingtalk",
+        ]
+        var gatewayPlatforms: [String: GatewayPlatformSettings] = [:]
+        for platform in gatewayAllowlistPlatforms {
+            let prefix = "gateway.platforms.\(platform)."
+            let allowedChannels = lists[prefix + "allowed_channels"] ?? []
+            let allowedChats    = lists[prefix + "allowed_chats"]    ?? []
+            let allowedRooms    = lists[prefix + "allowed_rooms"]    ?? []
+            let busy            = bool(prefix + "busy_ack_enabled", default: true)
+            let restartNotice   = bool(prefix + "gateway_restart_notification",
+                                       default: false)
+            let ttl             = int(prefix + "slash_command_notice_ttl_seconds",
+                                      default: 0)
+            let isEmpty = allowedChannels.isEmpty
+                && allowedChats.isEmpty
+                && allowedRooms.isEmpty
+                && values[prefix + "busy_ack_enabled"] == nil
+                && values[prefix + "gateway_restart_notification"] == nil
+                && values[prefix + "slash_command_notice_ttl_seconds"] == nil
+            if !isEmpty {
+                gatewayPlatforms[platform] = GatewayPlatformSettings(
+                    allowedChannels: allowedChannels,
+                    allowedChats: allowedChats,
+                    allowedRooms: allowedRooms,
+                    busyAckEnabled: busy,
+                    gatewayRestartNotification: restartNotice,
+                    slashCommandNoticeTTLSeconds: ttl
+                )
+            }
+        }
+
         return HermesConfig(
             model: str("model.default", default: "unknown"),
             provider: str("model.provider", default: "unknown"),
@@ -313,7 +354,8 @@ struct HermesFileService: Sendable {
             homeAssistant: homeAssistant,
             cacheTTL: str("prompt_caching.cache_ttl", default: "5m"),
             redactionEnabled: bool("redaction.enabled", default: false),
-            runtimeMetadataFooter: bool("agent.runtime_metadata_footer", default: false)
+            runtimeMetadataFooter: bool("agent.runtime_metadata_footer", default: false),
+            gatewayPlatforms: gatewayPlatforms
         )
     }
 

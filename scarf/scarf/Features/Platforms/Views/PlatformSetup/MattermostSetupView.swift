@@ -4,7 +4,13 @@ import ScarfDesign
 
 struct MattermostSetupView: View {
     @State private var viewModel: MattermostSetupViewModel
-    init(context: ServerContext) { _viewModel = State(initialValue: MattermostSetupViewModel(context: context)) }
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
+    let context: ServerContext
+
+    init(context: ServerContext) {
+        self.context = context
+        _viewModel = State(initialValue: MattermostSetupViewModel(context: context))
+    }
 
 
     var body: some View {
@@ -28,6 +34,13 @@ struct MattermostSetupView: View {
             }
 
             saveBar
+
+            // v0.13 Messaging Gateway behavior — self-hides on pre-v0.13.
+            GatewayBehaviorSection(
+                platform: "mattermost",
+                capabilities: capabilitiesStore?.capabilities ?? .empty,
+                context: context
+            )
         }
         .onAppear { viewModel.load() }
     }
