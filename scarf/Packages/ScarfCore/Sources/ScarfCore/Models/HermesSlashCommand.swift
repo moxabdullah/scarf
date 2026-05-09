@@ -24,6 +24,14 @@ public struct HermesSlashCommand: Identifiable, Sendable, Equatable {
         /// "agent working" indicator on; the guidance applies after the
         /// next tool call. Added in v2.5 alongside Hermes v2026.4.23.
         case acpNonInterruptive
+        /// ACP-native commands Hermes always supports but only advertises
+        /// inside an active session via `available_commands_update`.
+        /// Surfacing a small static fallback pre-session lets the slash
+        /// menu offer discoverable affordances like `/new` even before
+        /// the user has opened a session. Once a session starts, the
+        /// ACP-advertised version takes over (deduped by name in
+        /// `availableCommands`). Introduced alongside Hermes v0.13.
+        case alwaysAvailable
     }
 
     public var id: String { name }

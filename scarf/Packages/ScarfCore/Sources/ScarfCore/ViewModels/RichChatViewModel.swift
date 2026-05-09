@@ -290,6 +290,88 @@ public final class RichChatViewModel {
         )
     ]
 
+    /// Static fallback commands Hermes ACP always supports but only
+    /// advertises via `available_commands_update` after `session/new` —
+    /// not after `session/load`. Without this fallback, resumed sessions
+    /// (and "no active session" cold starts) showed an artificially
+    /// sparse menu. With this list, the menu is discoverable everywhere;
+    /// when the ACP-advertised version arrives, dedupe-by-name in
+    /// `availableCommands` ensures the canonical (richer description,
+    /// authoritative argument hint) entry wins.
+    ///
+    /// The set splits on whether a session is active:
+    /// - **Always** (no session AND active session): `/new`. It's the
+    ///   "open a session" affordance and arms the v0.13+ `[<name>]`
+    ///   argument hint via `hasNewWithSessionName`.
+    /// - **Active-session-only**: `/clear`, `/compact`, `/cost`, `/model`,
+    ///   `/tools`, `/reload-skills`, `/help`, `/exit`. Each requires a
+    ///   live session; surfacing them pre-session would mislead.
+    public static func alwaysAvailableCommands(
+        capabilities: HermesCapabilities,
+        hasActiveSession: Bool
+    ) -> [HermesSlashCommand] {
+        var result: [HermesSlashCommand] = [
+            HermesSlashCommand(
+                name: "new",
+                description: "Start a new chat session",
+                argumentHint: capabilities.hasNewWithSessionName ? "[<name>]" : nil,
+                source: .alwaysAvailable
+            )
+        ]
+        guard hasActiveSession else { return result }
+        result.append(contentsOf: [
+            HermesSlashCommand(
+                name: "clear",
+                description: "Clear the current conversation",
+                argumentHint: nil,
+                source: .alwaysAvailable
+            ),
+            HermesSlashCommand(
+                name: "compact",
+                description: "Compress the conversation history",
+                argumentHint: nil,
+                source: .alwaysAvailable
+            ),
+            HermesSlashCommand(
+                name: "cost",
+                description: "Show cost breakdown for this session",
+                argumentHint: nil,
+                source: .alwaysAvailable
+            ),
+            HermesSlashCommand(
+                name: "model",
+                description: "Switch the active model",
+                argumentHint: "[<model>]",
+                source: .alwaysAvailable
+            ),
+            HermesSlashCommand(
+                name: "tools",
+                description: "Manage tool availability",
+                argumentHint: nil,
+                source: .alwaysAvailable
+            ),
+            HermesSlashCommand(
+                name: "reload-skills",
+                description: "Reload the skills index",
+                argumentHint: nil,
+                source: .alwaysAvailable
+            ),
+            HermesSlashCommand(
+                name: "help",
+                description: "Show available commands",
+                argumentHint: nil,
+                source: .alwaysAvailable
+            ),
+            HermesSlashCommand(
+                name: "exit",
+                description: "End the current session",
+                argumentHint: nil,
+                source: .alwaysAvailable
+            )
+        ])
+        return result
+    }
+
     /// Capability snapshot the chat surface uses to filter
     /// `availableCommands`. Set by the chat controller (Mac
     /// `ChatViewModel`, iOS `ChatController`) at session-start time and
@@ -396,7 +478,20 @@ public final class RichChatViewModel {
             }
         }
         let nonInterruptive = supported.filter { !occupied.contains($0.name) }
-        return acpCommands + projectAsHermes + quicks + nonInterruptive
+        // Static fallbacks. `/new` always shows; the rest of the agent-
+        // level command set (`/clear`, `/compact`, `/cost`, `/model`,
+        // `/tools`, `/reload-skills`, `/help`, `/exit`) only when a
+        // session is active — Hermes ACP doesn't re-emit
+        // `available_commands_update` after `session/load`, so without
+        // this fallback resumed sessions showed an artificially sparse
+        // menu. Deduped against ACP / project / quick names so once a
+        // session starts and the ACP server advertises its richer
+        // versions, the ACP-sourced entry wins.
+        let alwaysAvailable = Self.alwaysAvailableCommands(
+            capabilities: capabilitiesGate,
+            hasActiveSession: sessionId != nil
+        ).filter { !occupied.contains($0.name) }
+        return acpCommands + projectAsHermes + quicks + nonInterruptive + alwaysAvailable
     }
 
     /// Publish a fresh capabilities snapshot from the controller.
@@ -615,7 +710,22 @@ public final class RichChatViewModel {
         acpErrorDetails = nil
         acpCachedReadTokens = 0
         acpCompressionCount = 0
-        acpCommands = []
+        // `acpCommands` is intentionally NOT cleared. ACP slash commands
+        // are agent-level (advertised once per process via
+        // `available_commands_update` typically piggy-backing on
+        // `session/new`); they don't change when the user switches
+        // sessions. Hermes does not re-emit on `session/load`, so if
+        // we wipe here, resumed sessions land at a 4-command fallback
+        // until the user starts a fresh session — observed during
+        // dogfooding against a Hermes v0.13 host. The caller paths
+        // (startNewSession, resumeSession, continueLastSession) all
+        // spawn a fresh ACP subprocess; if that subprocess emits a
+        // fresh list, our value is replaced; if it doesn't, we keep
+        // the most recently-known agent-level set, which stays
+        // accurate as long as the agent identity hasn't changed. The
+        // host-switch case (Local → SSH) tears down the whole
+        // ContextBoundRoot so this stale carry-over isn't reachable
+        // there.
         projectScopedCommands = []
         currentTurnStart = nil
         turnDurations = [:]
