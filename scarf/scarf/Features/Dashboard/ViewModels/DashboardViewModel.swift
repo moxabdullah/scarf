@@ -7,6 +7,18 @@ final class DashboardViewModel {
     private let dataService: HermesDataService
     private let fileService: HermesFileService
 
+    /// Single in-flight load handle. The `.onChange(fileWatcher.lastChangeDate)`
+    /// observer in `DashboardView` plus `.task` on first appear can both
+    /// fire concurrent loads — and on v0.13 hosts the FSEvents tick rate
+    /// during gateway activity used to be high enough that 5+ loads
+    /// stacked inside 200 ms (HermesFileWatcher's coalesce window now
+    /// handles that, but defending here keeps the behaviour deterministic
+    /// on any future watcher chattiness). When a load is in flight,
+    /// subsequent triggers no-op; the in-flight load already has a
+    /// recent-enough snapshot for the user.
+    @ObservationIgnored
+    private var inFlightLoad: Task<Void, Never>?
+
     init(context: ServerContext = .local) {
         self.context = context
         self.dataService = HermesDataService(context: context)
@@ -42,6 +54,27 @@ final class DashboardViewModel {
     var hermesShadows: [ProjectHermesShadowDetector.Shadow] = []
 
     func load() async {
+        // Coalesce overlapping triggers: the `.task` first-appear and the
+        // `.onChange(fileWatcher.lastChangeDate)` observer can both fire
+        // a load in the same tick. Without this guard a v0.13 host's
+        // WAL-write storm walked over the previous load mid-snapshot
+        // (see HermesFileWatcher.scheduleCoalescedTick + the v2.8 dogfood
+        // bug report). If a load is already running, await its
+        // completion and return — the caller already has a fresh snapshot
+        // by the time `await` returns.
+        if let existing = inFlightLoad {
+            await existing.value
+            return
+        }
+        let task: Task<Void, Never> = Task { @MainActor [weak self] in
+            await self?.loadImpl()
+        }
+        inFlightLoad = task
+        await task.value
+        inFlightLoad = nil
+    }
+
+    private func loadImpl() async {
         isLoading = true
         // refresh() is essentially free for the streaming remote backend
         // (no transfer — every query is fresh) and a cheap reopen for

@@ -15,6 +15,21 @@ final class HermesFileWatcher {
     /// the project list changes.
     private var remoteProjectPaths: [String] = []
 
+    /// Coalescing timer for `lastChangeDate` ticks. v0.13 Hermes writes to
+    /// `state.db-wal` and rotating logs at ~10 Hz during gateway activity;
+    /// every observing view (`DashboardView`, `ProjectsView`,
+    /// `ProjectSessionsView`, half a dozen widgets) re-fires its `.onChange`
+    /// or `.task(id:)` on every tick, which stacked concurrent dashboard
+    /// loads on v0.13 hosts and tripped sqlite contention on the read-only
+    /// state.db handle. We coalesce to at most one tick per
+    /// `coalesceWindow` so a burst of FSEvents collapses into one observable
+    /// state mutation. 500 ms picks the smallest window that still feels
+    /// responsive on a single keystroke `touch dashboard.json` while
+    /// surviving v0.13's WAL-write storm.
+    private var pendingCoalesceTimer: DispatchWorkItem?
+    private var pendingTickDate: Date?
+    private static let coalesceWindow: TimeInterval = 0.5
+
     let context: ServerContext
     private let transport: any ServerTransport
 
@@ -92,10 +107,30 @@ final class HermesFileWatcher {
             for await _ in stream {
                 ScarfMon.event(.transport, "mac.fileWatcher.remoteDelta", count: 1)
                 await MainActor.run { [weak self] in
-                    self?.lastChangeDate = Date()
+                    self?.scheduleCoalescedTick()
                 }
             }
         }
+    }
+
+    /// Coalesce a burst of FSEvents (or remote-poll deltas) into a single
+    /// `lastChangeDate` mutation after `coalesceWindow` seconds of quiet.
+    /// Each new fire records the latest event date and pushes the timer
+    /// out, so a 100-ms-spaced burst of 50 fires collapses to one observable
+    /// state mutation `coalesceWindow` ms after the LAST fire — same shape
+    /// as a debounce. Runs on `.main` (the FSEvents queue) so observers
+    /// see the publish on MainActor without a hop.
+    private func scheduleCoalescedTick() {
+        let now = Date()
+        pendingTickDate = now
+        pendingCoalesceTimer?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let date = self.pendingTickDate else { return }
+            self.pendingTickDate = nil
+            self.lastChangeDate = date
+        }
+        pendingCoalesceTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.coalesceWindow, execute: work)
     }
 
     func stopWatching() {
@@ -108,6 +143,9 @@ final class HermesFileWatcher {
         timer = nil
         remotePollTask?.cancel()
         remotePollTask = nil
+        pendingCoalesceTimer?.cancel()
+        pendingCoalesceTimer = nil
+        pendingTickDate = nil
     }
 
     /// Watch each project's `dashboard.json` AND its enclosing `.scarf/`
@@ -162,7 +200,7 @@ final class HermesFileWatcher {
             // message persisted); high counts when nothing's happening
             // suggest a runaway watcher install.
             ScarfMon.event(.transport, "mac.fileWatcher.localFire", count: 1)
-            self?.lastChangeDate = Date()
+            self?.scheduleCoalescedTick()
         }
         source.setCancelHandler {
             Darwin.close(fd)
