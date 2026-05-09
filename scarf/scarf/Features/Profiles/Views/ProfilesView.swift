@@ -11,7 +11,12 @@ struct ProfilesView: View {
     @State private var createName = ""
     @State private var createCloneConfig = true
     @State private var createCloneAll = false
+    /// v0.13+ `--no-skills` toggle. Mutually exclusive with `--clone-all`
+    /// at the UX layer (Decision H from the WS-7 plan): a full clone
+    /// copies skills wholesale — `--no-skills` would be a contradiction.
+    @State private var createNoSkills = false
     @State private var showRename = false
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
 
     init(context: ServerContext) {
         _viewModel = State(initialValue: ProfilesViewModel(context: context))
@@ -123,7 +128,7 @@ struct ProfilesView: View {
                 }
                 Spacer()
                 Button {
-                    createName = ""; createCloneConfig = true; createCloneAll = false
+                    createName = ""; createCloneConfig = true; createCloneAll = false; createNoSkills = false
                     showCreate = true
                 } label: {
                     Label("Create", systemImage: "plus")
@@ -300,11 +305,31 @@ struct ProfilesView: View {
             Toggle("Clone config, .env, SOUL.md from active profile", isOn: $createCloneConfig)
                 .disabled(createCloneAll)
             Toggle("Full copy of active profile (all state)", isOn: $createCloneAll)
+            // TODO(WS-7-Q8): Decision H — disable --no-skills when --clone-all
+            // is on. A full clone copies skills wholesale; --no-skills would
+            // be a contradiction. Verify Hermes's behaviour with both flags
+            // (argparse mutual exclusion vs. last-flag-wins vs. clone-but-
+            // skip-skills) and relax the disabled state if Hermes does
+            // something useful with the combination.
+            if capabilitiesStore?.capabilities.hasProfileNoSkills ?? false {
+                Toggle("Empty profile (no skills)", isOn: $createNoSkills)
+                    .disabled(createCloneAll)
+            }
             HStack {
                 Spacer()
                 Button("Cancel") { showCreate = false }
                 Button("Create") {
-                    viewModel.create(name: createName, cloneConfig: createCloneConfig, cloneAll: createCloneAll)
+                    viewModel.create(
+                        name: createName,
+                        cloneConfig: createCloneConfig,
+                        cloneAll: createCloneAll,
+                        // Defensive: if the toggle isn't visible (pre-v0.13)
+                        // the state is always `false`, but read it through
+                        // the capability gate anyway so a stale state value
+                        // can't sneak `--no-skills` to a CLI that doesn't
+                        // know it.
+                        noSkills: (capabilitiesStore?.capabilities.hasProfileNoSkills ?? false) ? createNoSkills : false
+                    )
                     showCreate = false
                 }
                 .buttonStyle(.borderedProminent)

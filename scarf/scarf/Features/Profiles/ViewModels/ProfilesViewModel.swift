@@ -112,10 +112,17 @@ final class ProfilesViewModel {
         }
     }
 
-    func create(name: String, cloneConfig: Bool, cloneAll: Bool) {
+    func create(name: String, cloneConfig: Bool, cloneAll: Bool, noSkills: Bool = false) {
         var args = ["profile", "create", name]
         if cloneAll { args.append("--clone-all") }
         else if cloneConfig { args.append("--clone") }
+        // v0.13+: Empty-profile creation. The wire is independent of
+        // --clone / --clone-all per the v0.13 release notes — the user
+        // can stack `--clone --no-skills` to clone config but skip
+        // skills, which is a plausible workflow. The UI still disables
+        // the toggle under --clone-all (Decision H, see ProfilesView)
+        // but the wire is permissive.
+        if noSkills { args.append("--no-skills") }
         runAndReload(args, success: "Profile '\(name)' created")
     }
 
