@@ -29,8 +29,31 @@ final class SettingsViewModel {
     // that no-ops on older hosts is low compared to gating overhead.
     var terminalBackends = ["local", "docker", "singularity", "modal", "daytona", "ssh", "vercel"]
     var browserBackends = ["browseruse", "firecrawl", "local"]
-    var ttsProviders = ["edge", "elevenlabs", "openai", "minimax", "mistral", "neutts", "piper"]
+    // v0.13: `xai` joins the TTS provider list. xAI shipped TTS earlier
+    // (v0.12) but the v0.13 add-on is custom voice cloning — see
+    // `HermesCapabilities.hasXAIVoiceCloning` and the badge in VoiceTab.
+    // The provider option itself is ungated so pre-v0.13 hosts with xAI
+    // keys can still pick it.
+    var ttsProviders = ["edge", "elevenlabs", "openai", "minimax", "mistral", "neutts", "piper", "xai"]
     var sttProviders = ["local", "groq", "openai", "mistral"]
+    /// Static-message translation languages honored by Hermes v0.13's
+    /// `display.language` key. The first row's empty value writes no
+    /// key — equivalent to "Hermes default" — while explicit `en` writes
+    /// the code so users who care about determinism can pin it. Keep the
+    /// label list in sync with the Hermes v0.13 release notes; new
+    /// languages should be appended in alphabetical order by display
+    /// label so the picker stays scannable.
+    var displayLanguages: [(code: String, label: String)] = [
+        ("",   "English (default)"),
+        ("en", "English"),
+        ("zh", "中文 (Chinese)"),
+        ("ja", "日本語 (Japanese)"),
+        ("de", "Deutsch (German)"),
+        ("es", "Español (Spanish)"),
+        ("fr", "Français (French)"),
+        ("uk", "Українська (Ukrainian)"),
+        ("tr", "Türkçe (Turkish)"),
+    ]
     var memoryProviders = ["", "honcho", "openviking", "mem0", "hindsight", "holographic", "retaindb", "byterover", "supermemory"]
     var saveMessage: String?
     var isLoading = false
@@ -104,6 +127,10 @@ final class SettingsViewModel {
     func setToolProgressCommand(_ value: Bool) { setSetting("display.tool_progress_command", value: value ? "true" : "false") }
     func setToolPreviewLength(_ value: Int) { setSetting("display.tool_preview_length", value: String(value)) }
     func setBusyInputMode(_ value: String) { setSetting("display.busy_input_mode", value: value) }
+    /// v0.13: `display.language` for static-message translations. Empty
+    /// string writes "" via `hermes config set` which Hermes treats as
+    /// "use default"; explicit codes pin the language.
+    func setDisplayLanguage(_ value: String) { setSetting("display.language", value: value) }
 
     // MARK: - Agent
 
@@ -158,6 +185,10 @@ final class SettingsViewModel {
     func setTTSOpenAIVoice(_ value: String) { setSetting("tts.openai.voice", value: value) }
     func setTTSNeuTTSModel(_ value: String) { setSetting("tts.neutts.model", value: value) }
     func setTTSNeuTTSDevice(_ value: String) { setSetting("tts.neutts.device", value: value) }
+    // v0.13: xAI TTS / Custom Voices. TODO(WS-8-Q2): grep-verify key
+    // names against `~/.hermes/hermes-agent/hermes_cli/voice/tts.py`.
+    func setTTSXAIVoiceID(_ value: String) { setSetting("tts.xai.voice_id", value: value) }
+    func setTTSXAIModel(_ value: String) { setSetting("tts.xai.model", value: value) }
     func setSTTEnabled(_ value: Bool) { setSetting("stt.enabled", value: value ? "true" : "false") }
     func setSTTProvider(_ value: String) { setSetting("stt.provider", value: value) }
     func setSTTLocalModel(_ value: String) { setSetting("stt.local.model", value: value) }

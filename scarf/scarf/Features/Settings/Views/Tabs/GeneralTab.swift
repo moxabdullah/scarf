@@ -7,6 +7,7 @@ import ScarfCore
 struct GeneralTab: View {
     @Bindable var viewModel: SettingsViewModel
     @Environment(AppCoordinator.self) private var coordinator
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
 
     var body: some View {
         SettingsSection(title: "Model", icon: "cpu") {
@@ -39,6 +40,20 @@ struct GeneralTab: View {
 
         SettingsSection(title: "Locale", icon: "globe.americas") {
             EditableTextField(label: "Timezone (IANA)", value: viewModel.config.timezone) { viewModel.setTimezone($0) }
+            // v0.13: `display.language` picker. Hidden on pre-v0.13 hosts
+            // because writing the key would no-op silently. Two "English"
+            // entries by design — empty string preserves "no key" semantics
+            // (Hermes-default), explicit `en` pins it.
+            if capabilitiesStore?.capabilities.hasDisplayLanguage == true {
+                PickerRow(
+                    label: "Display language",
+                    selection: viewModel.config.display.language,
+                    options: viewModel.displayLanguages.map(\.code),
+                    optionLabel: { code in
+                        viewModel.displayLanguages.first { $0.code == code }?.label ?? code
+                    }
+                ) { viewModel.setDisplayLanguage($0) }
+            }
         }
 
         UpdatesSection()

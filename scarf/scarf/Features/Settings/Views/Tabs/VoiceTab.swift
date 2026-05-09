@@ -1,9 +1,11 @@
 import SwiftUI
 import ScarfCore
+import ScarfDesign
 
 /// Voice tab — push-to-talk + TTS + STT provider settings.
 struct VoiceTab: View {
     @Bindable var viewModel: SettingsViewModel
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
 
     var body: some View {
         SettingsSection(title: "Push-to-Talk", icon: "mic") {
@@ -28,6 +30,16 @@ struct VoiceTab: View {
             case "neutts":
                 EditableTextField(label: "Model", value: viewModel.config.voice.ttsNeuTTSModel) { viewModel.setTTSNeuTTSModel($0) }
                 PickerRow(label: "Device", selection: viewModel.config.voice.ttsNeuTTSDevice, options: ["cpu", "cuda"]) { viewModel.setTTSNeuTTSDevice($0) }
+            case "xai":
+                // v0.13: xAI TTS surface. Voice ID + Model are always
+                // visible (xAI TTS shipped earlier); the cloning-supported
+                // badge is gated on `hasXAIVoiceCloning` so pre-v0.13 hosts
+                // see the input rows but no cloning advertisement.
+                EditableTextField(label: "Voice ID", value: viewModel.config.voice.ttsXAIVoiceID) { viewModel.setTTSXAIVoiceID($0) }
+                EditableTextField(label: "Model", value: viewModel.config.voice.ttsXAIModel) { viewModel.setTTSXAIModel($0) }
+                if capabilitiesStore?.capabilities.hasXAIVoiceCloning == true {
+                    xaiCloningBadge
+                }
             default:
                 EmptyView()
             }
@@ -48,5 +60,25 @@ struct VoiceTab: View {
                 EmptyView()
             }
         }
+    }
+
+    /// Inline hint chip+caption shown below xAI's Voice ID + Model fields
+    /// on v0.13+. References `hermes voice` because Scarf doesn't manage
+    /// cloned voices in-app yet — the badge is discovery-only. Out-of-scope
+    /// for v2.8: an in-app cloned-voice manager (would be its own feature).
+    @ViewBuilder
+    private var xaiCloningBadge: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Text("")
+                .font(.caption)
+                .frame(width: 160, alignment: .trailing)
+            ScarfBadge("Cloning supported", kind: .info)
+            Text("Manage cloned voices in your terminal: `hermes voice` (xAI subcommands).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
     }
 }

@@ -36,6 +36,13 @@ public struct DisplaySettings: Sendable, Equatable {
     public var toolProgressCommand: Bool
     public var toolPreviewLength: Int
     public var busyInputMode: String           // e.g. "interrupt"
+    /// Static-message translation language. v0.13+. Empty string means
+    /// "follow Hermes default" — the picker collapses both empty-string
+    /// and `"en"` to "English" in display, but only writes a value when
+    /// the user explicitly picks one. Persisted via
+    /// `hermes config set display.language <code>`. Supported values per
+    /// v0.13 release notes: `en`, `zh`, `ja`, `de`, `es`, `fr`, `uk`, `tr`.
+    public var language: String
 
 
     public init(
@@ -46,7 +53,8 @@ public struct DisplaySettings: Sendable, Equatable {
         inlineDiffs: Bool,
         toolProgressCommand: Bool,
         toolPreviewLength: Int,
-        busyInputMode: String
+        busyInputMode: String,
+        language: String = ""
     ) {
         self.skin = skin
         self.compact = compact
@@ -56,6 +64,7 @@ public struct DisplaySettings: Sendable, Equatable {
         self.toolProgressCommand = toolProgressCommand
         self.toolPreviewLength = toolPreviewLength
         self.busyInputMode = busyInputMode
+        self.language = language
     }
     public nonisolated static let empty = DisplaySettings(
         skin: "default",
@@ -65,7 +74,8 @@ public struct DisplaySettings: Sendable, Equatable {
         inlineDiffs: true,
         toolProgressCommand: false,
         toolPreviewLength: 0,
-        busyInputMode: "interrupt"
+        busyInputMode: "interrupt",
+        language: ""
     )
 }
 
@@ -190,6 +200,15 @@ public struct VoiceSettings: Sendable, Equatable {
     public var ttsOpenAIVoice: String
     public var ttsNeuTTSModel: String
     public var ttsNeuTTSDevice: String
+    /// xAI TTS voice identifier. v0.13+ — xAI shipped TTS earlier but the
+    /// custom-voice / cloning surface is the v0.13 add-on.
+    // TODO(WS-8-Q2): Confirm key name vs `tts.xai.voice` /
+    // `tts.xai.voice_id` / a top-level `tts.xai_voice` once a v0.13
+    // host is on hand. The setter / YAML reader follow whatever this
+    // field name implies.
+    public var ttsXAIVoiceID: String
+    /// xAI TTS model identifier. v0.13+. Mirrors the elevenlabs shape.
+    public var ttsXAIModel: String
 
     // STT
     public var sttEnabled: Bool
@@ -217,7 +236,9 @@ public struct VoiceSettings: Sendable, Equatable {
         sttLocalModel: String,
         sttLocalLanguage: String,
         sttOpenAIModel: String,
-        sttMistralModel: String
+        sttMistralModel: String,
+        ttsXAIVoiceID: String = "",
+        ttsXAIModel: String = ""
     ) {
         self.recordKey = recordKey
         self.maxRecordingSeconds = maxRecordingSeconds
@@ -230,6 +251,8 @@ public struct VoiceSettings: Sendable, Equatable {
         self.ttsOpenAIVoice = ttsOpenAIVoice
         self.ttsNeuTTSModel = ttsNeuTTSModel
         self.ttsNeuTTSDevice = ttsNeuTTSDevice
+        self.ttsXAIVoiceID = ttsXAIVoiceID
+        self.ttsXAIModel = ttsXAIModel
         self.sttEnabled = sttEnabled
         self.sttProvider = sttProvider
         self.sttLocalModel = sttLocalModel
@@ -254,7 +277,9 @@ public struct VoiceSettings: Sendable, Equatable {
         sttLocalModel: "base",
         sttLocalLanguage: "",
         sttOpenAIModel: "whisper-1",
-        sttMistralModel: "voxtral-mini-latest"
+        sttMistralModel: "voxtral-mini-latest",
+        ttsXAIVoiceID: "",
+        ttsXAIModel: ""
     )
 }
 

@@ -84,7 +84,11 @@ struct HermesFileService: Sendable {
             inlineDiffs: bool("display.inline_diffs", default: true),
             toolProgressCommand: bool("display.tool_progress_command", default: false),
             toolPreviewLength: int("display.tool_preview_length", default: 0),
-            busyInputMode: str("display.busy_input_mode", default: "interrupt")
+            busyInputMode: str("display.busy_input_mode", default: "interrupt"),
+            // v0.13: empty default means "key absent — agent uses its own
+            // default" (English). The picker writes a real value when the
+            // user explicitly chooses one.
+            language: str("display.language", default: "")
         )
 
         let terminal = TerminalSettings(
@@ -131,7 +135,12 @@ struct HermesFileService: Sendable {
             sttLocalModel: str("stt.local.model", default: "base"),
             sttLocalLanguage: str("stt.local.language"),
             sttOpenAIModel: str("stt.openai.model", default: "whisper-1"),
-            sttMistralModel: str("stt.mistral.model", default: "voxtral-mini-latest")
+            sttMistralModel: str("stt.mistral.model", default: "voxtral-mini-latest"),
+            // TODO(WS-8-Q2): Verify key names. Mirroring the elevenlabs
+            // shape (`<provider>.voice_id` + `<provider>.model`); v0.13
+            // source might use `tts.xai.voice` or `tts.xai.model_id`.
+            ttsXAIVoiceID: str("tts.xai.voice_id"),
+            ttsXAIModel: str("tts.xai.model")
         )
 
         func aux(_ name: String) -> AuxiliaryModel {
