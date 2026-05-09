@@ -60,6 +60,17 @@ public enum KnownPlatforms {
         // platform identifiers.
         HermesToolPlatform(name: "yuanbao", displayName: "Yuanbao 元宝", icon: "bubble.left.and.bubble.right.fill"),
         HermesToolPlatform(name: "microsoft-teams", displayName: "Microsoft Teams", icon: "person.2.fill"),
+        // -- v0.13 additions ---------------------------------------------
+        // Google Chat is the 20th gateway platform. It's a generic
+        // `env_enablement_fn` / `cron_deliver_env_var`-driven adapter; setup
+        // runs through `hermes setup` rather than per-field forms because
+        // the auth dance is OAuth-style and lives outside Scarf. Identifier
+        // is `google-chat` (kebab-case, mirroring `microsoft-teams`).
+        // TODO(WS-5-Q1): verify identifier against Hermes v0.13 GA — if it
+        // ships as `googlechat` instead, update both this entry and
+        // `KnownPlatforms.icon(for:)` below. `GatewayAllowlistKind.kind(for:)`
+        // already accepts both spellings defensively.
+        HermesToolPlatform(name: "google-chat", displayName: "Google Chat", icon: "bubble.left.fill"),
     ]
 
     public static func icon(for platform: String) -> String {
@@ -79,6 +90,7 @@ public enum KnownPlatforms {
         case "imessage": return "message.fill"
         case "yuanbao": return "bubble.left.and.bubble.right.fill"
         case "microsoft-teams": return "person.2.fill"
+        case "google-chat", "googlechat": return "bubble.left.fill"
         default: return "bubble.left"
         }
     }

@@ -4,7 +4,13 @@ import ScarfDesign
 
 struct SlackSetupView: View {
     @State private var viewModel: SlackSetupViewModel
-    init(context: ServerContext) { _viewModel = State(initialValue: SlackSetupViewModel(context: context)) }
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
+    let context: ServerContext
+
+    init(context: ServerContext) {
+        self.context = context
+        _viewModel = State(initialValue: SlackSetupViewModel(context: context))
+    }
 
 
     var body: some View {
@@ -30,6 +36,13 @@ struct SlackSetupView: View {
             }
 
             saveBar
+
+            // v0.13 Messaging Gateway behavior — self-hides on pre-v0.13.
+            GatewayBehaviorSection(
+                platform: "slack",
+                capabilities: capabilitiesStore?.capabilities ?? .empty,
+                context: context
+            )
         }
         .onAppear { viewModel.load() }
     }

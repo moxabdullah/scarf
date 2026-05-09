@@ -1,7 +1,13 @@
 import Foundation
 import ScarfCore
 
-struct GatewayInfo {
+// **Local rename for v0.13 / WS-5.** The user-facing label is "Messaging
+// Gateway"; the type names mirror that. The `SidebarSection.gateway` enum
+// case + `gateway_state.json` / `gateway.log` paths intentionally stay
+// unchanged — those aren't user-facing strings, and renaming them would
+// churn unrelated callers without changing what users see.
+
+struct MessagingGatewayInfo {
     let pid: Int?
     let state: String
     let exitReason: String?
@@ -37,32 +43,48 @@ struct PendingPairing: Identifiable {
 }
 
 @Observable
-final class GatewayViewModel {
+@MainActor
+final class MessagingGatewayViewModel {
     let context: ServerContext
+    /// Capability snapshot at view-init time. Read for the v0.13 cross-
+    /// profile digest (`hasGatewayList`); other v0.13 surfaces live on
+    /// per-platform setup views. `.empty` is fine outside the per-server
+    /// `ContextBoundRoot` (Previews, smoke tests).
+    let capabilities: HermesCapabilities
 
-    init(context: ServerContext = .local) {
+    init(context: ServerContext = .local, capabilities: HermesCapabilities = .empty) {
         self.context = context
+        self.capabilities = capabilities
     }
 
-    var gateway = GatewayInfo(pid: nil, state: "unknown", exitReason: nil, startTime: nil, updatedAt: nil, platforms: [], isLoaded: false, isStale: false)
+    var gateway = MessagingGatewayInfo(pid: nil, state: "unknown", exitReason: nil, startTime: nil, updatedAt: nil, platforms: [], isLoaded: false, isStale: false)
     var approvedUsers: [PairedUser] = []
     var pendingPairings: [PendingPairing] = []
     var isLoading = false
     var actionMessage: String?
+    /// `hermes gateway list --json` snapshot. `nil` when the verb fails
+    /// (pre-v0.13 host or no profiles registered yet) — the digest row
+    /// hides itself in that case.
+    var gatewayList: GatewayListSnapshot?
 
     func load() {
         isLoading = true
         let ctx = context
+        let caps = capabilities
         Task.detached { [weak self] in
             // Two sync transport calls + two CLI invocations — substantial
             // remote latency. Detach the whole load and commit at the end.
             let status = Self.fetchGatewayStatus(context: ctx)
             let pairing = Self.fetchPairing(context: ctx)
+            let listSnap = caps.hasGatewayList
+                ? HermesGatewayListService.fetch(context: ctx)
+                : nil
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.gateway = status
                 self.approvedUsers = pairing.approved
                 self.pendingPairings = pairing.pending
+                self.gatewayList = listSnap
                 self.isLoading = false
             }
         }
@@ -70,7 +92,7 @@ final class GatewayViewModel {
 
     /// Static form of the gateway-status walk so the detached load can call
     /// it without bouncing back to MainActor.
-    nonisolated private static func fetchGatewayStatus(context: ServerContext) -> GatewayInfo {
+    nonisolated private static func fetchGatewayStatus(context: ServerContext) -> MessagingGatewayInfo {
         let stateJSON = context.readData(context.paths.gatewayStateJSON)
         var pid: Int?
         var state = "unknown"
@@ -102,7 +124,7 @@ final class GatewayViewModel {
         let isLoaded = statusOutput.contains("service is loaded")
         let isStale = statusOutput.contains("stale")
 
-        return GatewayInfo(
+        return MessagingGatewayInfo(
             pid: pid, state: state, exitReason: exitReason,
             startTime: startTime, updatedAt: updatedAt,
             platforms: platforms, isLoaded: isLoaded, isStale: isStale
