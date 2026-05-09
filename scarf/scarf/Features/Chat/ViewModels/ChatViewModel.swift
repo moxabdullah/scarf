@@ -77,6 +77,27 @@ final class ChatViewModel {
     let richChatViewModel: RichChatViewModel
     private var coordinator: Coordinator?
 
+    /// Capability store the chat surface reads from. Set by `ChatView`
+    /// at body-evaluation time via `attachCapabilitiesStore(_:)` —
+    /// `@ObservationIgnored` so capability refreshes don't force a
+    /// full chat re-render. Forwards into
+    /// `RichChatViewModel.capabilitiesGate` whenever the published
+    /// snapshot changes; the slash menu reads through that. v2.8 /
+    /// Hermes v0.13 — gates `/goal` + `/queue` slash menu rows.
+    @ObservationIgnored
+    var capabilitiesStore: HermesCapabilitiesStore?
+
+    /// Wire the Mac chat view's environment-injected capabilities store
+    /// into both this VM and its child rich-chat VM. Idempotent on the
+    /// pointer (re-attaching the same store is a no-op); always
+    /// re-publishes the latest snapshot so a refresh that fired before
+    /// the chat view became visible still lands.
+    @MainActor
+    func attachCapabilitiesStore(_ store: HermesCapabilitiesStore?) {
+        capabilitiesStore = store
+        richChatViewModel.publishCapabilities(store?.capabilities ?? .empty)
+    }
+
     /// `callId` of the tool call currently surfaced in the chat
     /// inspector pane, or nil when nothing is focused. Set by
     /// `ToolCallCard` taps in the transcript; cleared by the inspector's
@@ -319,6 +340,47 @@ final class ChatViewModel {
     /// stays here — only the storage is shared.
     private func clearACPErrorState() {
         richChatViewModel.clearACPErrorState()
+    }
+
+    /// Auto-clear the chat composer's transient hint after 4 s. Shared
+    /// helper for `/steer`, `/goal`, and `/queue` so the toast lifetime
+    /// stays consistent across non-interruptive commands.
+    @MainActor
+    private func scheduleHintClear() {
+        let snapshot = richChatViewModel.transientHint
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            if self?.richChatViewModel.transientHint == snapshot {
+                self?.richChatViewModel.transientHint = nil
+            }
+        }
+    }
+
+    /// Pull the slash command name + raw argument tail out of the
+    /// composer text. Returns `(name: nil, args: "")` for non-slash
+    /// input. Mirrors the parser shape `RichChatViewModel.parseGoalArgument`
+    /// expects; kept on `ChatViewModel` (not promoted to ScarfCore)
+    /// because the Mac and iOS chat surfaces compose this with their
+    /// own per-platform send paths.
+    static func parseSlashName(_ text: String) -> (name: String?, args: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("/") else { return (nil, "") }
+        let withoutSlash = trimmed.dropFirst()
+        if let space = withoutSlash.firstIndex(of: " ") {
+            return (
+                name: String(withoutSlash[..<space]),
+                args: String(withoutSlash[withoutSlash.index(after: space)...])
+            )
+        }
+        return (name: String(withoutSlash), args: "")
+    }
+
+    /// Cap goal text in transient toasts so a 1 KB user-typed goal
+    /// doesn't blow out the hint pill. The header pill applies its
+    /// own 33-char cap; the toast is shorter so the hint stays
+    /// glanceable.
+    static func truncatedToastGoal(_ text: String) -> String {
+        text.count <= 60 ? text : String(text.prefix(57)) + "…"
     }
 
     @MainActor
@@ -575,22 +637,59 @@ final class ChatViewModel {
         // and Hermes-version-independent. v2.5.
         let wireText = expandIfProjectScoped(text)
 
-        // /steer is non-interruptive — the agent is still on its
-        // current turn; the guidance applies after the next tool
-        // call. Don't change the "Agent working..." status (it's
-        // already on); show a transient toast so the user knows the
-        // guidance was accepted. v2.5 / Hermes v2026.4.23+.
-        let isSteer = richChatViewModel.isNonInterruptiveSlash(text)
-        if isSteer {
-            richChatViewModel.transientHint = "Guidance queued — applies after the next tool call."
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
-                if self?.richChatViewModel.transientHint == "Guidance queued — applies after the next tool call." {
-                    self?.richChatViewModel.transientHint = nil
-                }
+        // Non-interruptive slash commands keep the "Agent working…"
+        // indicator off and surface a transient toast confirming the
+        // command was accepted. v2.5 added `/steer`; v2.8 / Hermes
+        // v0.13 adds `/goal` (lock the agent on a target across turns)
+        // and `/queue` (queue a prompt for after the current turn).
+        // Each gets its own optimistic side-effect on RichChatViewModel
+        // so the chat header pill / queue chip update synchronously
+        // without waiting for a server round-trip.
+        let isNonInterruptive = richChatViewModel.isNonInterruptiveSlash(text)
+        let parsed = Self.parseSlashName(text)
+        switch parsed.name {
+        case "goal":
+            // TODO(WS-2-Q7): once a v0.13 host confirms the
+            // wire-shape, this branch fires only when the host
+            // advertises `hasGoals`; pre-v0.13 hosts hide the menu
+            // row, but a power-user typing `/goal` directly still
+            // lands here. We keep the optimistic write so the pill
+            // appears synchronously — the agent's "unknown command"
+            // reply on a pre-v0.13 host paints the inconsistency in
+            // user-visible chat content (acceptable v1 behavior;
+            // see WS-2 plan "Inconsistency caveat").
+            let arg = RichChatViewModel.parseGoalArgument(parsed.args)
+            switch arg {
+            case .set(let goalText):
+                richChatViewModel.recordActiveGoal(text: goalText)
+                richChatViewModel.transientHint = "Goal locked: \(Self.truncatedToastGoal(goalText))"
+            case .clear:
+                richChatViewModel.recordActiveGoal(text: nil)
+                richChatViewModel.transientHint = "Goal cleared."
+            case .empty:
+                richChatViewModel.transientHint = "Sent /goal — see the agent reply for current goal."
             }
-        } else {
-            acpStatus = ACPPhase.agentWorking
+            scheduleHintClear()
+        case "queue":
+            // TODO(WS-2-Q5): verify against a real v0.13 ACP host
+            // that the verbatim "/queue <text>" wire shape is what
+            // Hermes accepts (versus a structured arg shape). The
+            // optimistic mirror logic below assumes verbatim text.
+            let queuedText = parsed.args.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !queuedText.isEmpty {
+                richChatViewModel.recordQueuedPrompt(text: queuedText)
+            }
+            richChatViewModel.transientHint = "Queued — runs after current turn."
+            scheduleHintClear()
+        case "steer" where isNonInterruptive:
+            richChatViewModel.transientHint = "Guidance queued — applies after the next tool call."
+            scheduleHintClear()
+        default:
+            // Regular interruptive prompt (or an unrecognized slash).
+            // Don't flip "Agent working…" for any other
+            // non-interruptive command (defensive; matches the
+            // legacy contract).
+            if !isNonInterruptive { acpStatus = ACPPhase.agentWorking }
         }
         acpPromptTask = Task { @MainActor in
             do {
@@ -608,7 +707,7 @@ final class ChatViewModel {
                 // notifier handles the foreground/disabled gating;
                 // we just hand it the latest assistant text and
                 // session title for the body line.
-                if !isSteer {
+                if !isNonInterruptive {
                     let preview = richChatViewModel.messages
                         .last(where: { $0.isAssistant })?
                         .content ?? ""

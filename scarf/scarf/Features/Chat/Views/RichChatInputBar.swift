@@ -16,6 +16,11 @@ struct RichChatInputBar: View {
     let isEnabled: Bool
     var commands: [HermesSlashCommand] = []
     var showCompressButton: Bool = false
+    /// Whether the agent is currently mid-turn. Used to grey-out
+    /// `/steer` in the slash menu on idle pre-v0.13 hosts (where the
+    /// command silently no-ops). v0.13+ hosts allow `/steer` on idle
+    /// and the row stays interactive regardless of `isAgentWorking`.
+    var isAgentWorking: Bool = false
 
     @Environment(\.hermesCapabilities) private var capabilitiesStore
 
@@ -52,6 +57,8 @@ struct RichChatInputBar: View {
                 SlashCommandMenu(
                     commands: filteredCommands,
                     agentHasCommands: !commands.isEmpty,
+                    disabledCommandNames: disabledMenuCommandNames,
+                    disabledReason: disabledMenuReason,
                     selectedIndex: $selectedIndex,
                     onSelect: insertCommand
                 )
@@ -390,6 +397,27 @@ struct RichChatInputBar: View {
 
     private var filteredCommands: [HermesSlashCommand] {
         SlashCommandMenu.filter(commands: commands, query: menuQuery)
+    }
+
+    /// Names of menu rows that should render greyed-out + ignore taps.
+    /// v2.8 / Hermes v0.13: `/steer` is greyed only when the connected
+    /// host is pre-v0.13 AND the session is idle. Pre-v0.13 hosts
+    /// silently no-op `/steer` outside an active turn — surfacing the
+    /// row as "use during a turn" is friendlier than letting the user
+    /// click and see nothing happen. v0.13+ hosts allow steer-on-idle
+    /// (the command just sends as a regular prompt) so the row stays
+    /// interactive there.
+    private var disabledMenuCommandNames: Set<String> {
+        let hasSteerOnIdle = capabilitiesStore?.capabilities.hasACPSteerOnIdle ?? false
+        if !isAgentWorking && !hasSteerOnIdle {
+            return ["steer"]
+        }
+        return []
+    }
+
+    private var disabledMenuReason: String? {
+        guard !disabledMenuCommandNames.isEmpty else { return nil }
+        return "Use `/steer` while the agent is working — your Hermes version doesn't support steering on idle sessions."
     }
 
     private func updateMenuState() {

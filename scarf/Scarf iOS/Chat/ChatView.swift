@@ -109,6 +109,17 @@ struct ChatView: View {
                 }
             )
         }
+        // Forward the env-injected capabilities snapshot into the
+        // shared `RichChatViewModel` whenever it changes. Drives the
+        // capability gate `RichChatViewModel.availableCommands` reads.
+        // Mirrors the Mac `ChatView` plumbing — the iOS chat surface
+        // doesn't render `/goal` / `/queue` UI yet (deferred to WS-9),
+        // but the VM-side state has to stay aligned across platforms
+        // so the Mac surface is correct after a cross-device session
+        // resume.
+        .task(id: capabilitiesStore?.capabilities.versionLine ?? "") {
+            controller.vm.publishCapabilities(capabilitiesStore?.capabilities ?? .empty)
+        }
         .task {
             // Dashboard row taps set `pendingResumeSessionID`, Project
             // Detail's "New Chat" sets `pendingProjectChat`. Both fire
@@ -1307,18 +1318,48 @@ final class ChatController {
             // even when they didn't type any caption.
             vm.addUserMessage(text: "[image attached]")
         }
-        // /steer is non-interruptive — the agent is still on its
-        // current turn; the guidance applies after the next tool call.
-        // Surface a transient toast confirming the guidance was
-        // received. v2.5 / Hermes v2026.4.23+.
-        if vm.isNonInterruptiveSlash(text) {
-            vm.transientHint = "Guidance queued — applies after the next tool call."
-            Task { @MainActor [weak vm] in
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
-                if vm?.transientHint == "Guidance queued — applies after the next tool call." {
-                    vm?.transientHint = nil
-                }
+        // Non-interruptive slash commands: keep the chat working
+        // indicator off and surface a transient toast confirming the
+        // command was accepted. v2.5 added `/steer`; v2.8 / Hermes
+        // v0.13 adds `/goal` (lock the agent on a target across
+        // turns) and `/queue` (queue a prompt for after the current
+        // turn). Each gets its own optimistic side-effect on the VM
+        // so the (Mac-rendered) chat header pill / queue chip update
+        // synchronously. iOS doesn't surface those affordances yet
+        // (WS-9), but mirroring the dispatch keeps the shared VM
+        // state aligned across platforms — otherwise an iOS user who
+        // ran `/goal` then opened the same session on Mac would see
+        // an empty pill until they typed `/goal` again.
+        let parsedSlash = Self.parseSlashName(text)
+        switch parsedSlash.name {
+        case "goal":
+            // TODO(WS-2-Q7): verify on a real v0.13 host.
+            let arg = RichChatViewModel.parseGoalArgument(parsedSlash.args)
+            switch arg {
+            case .set(let goalText):
+                vm.recordActiveGoal(text: goalText)
+                vm.transientHint = "Goal locked: \(Self.truncatedToastGoal(goalText))"
+            case .clear:
+                vm.recordActiveGoal(text: nil)
+                vm.transientHint = "Goal cleared."
+            case .empty:
+                vm.transientHint = "Sent /goal — see the agent reply for current goal."
             }
+            scheduleTransientHintClear(snapshot: vm.transientHint)
+        case "queue":
+            // TODO(WS-2-Q5): verify the verbatim wire shape on a
+            // real v0.13 ACP host.
+            let queuedText = parsedSlash.args.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !queuedText.isEmpty {
+                vm.recordQueuedPrompt(text: queuedText)
+            }
+            vm.transientHint = "Queued — runs after current turn."
+            scheduleTransientHintClear(snapshot: vm.transientHint)
+        case "steer" where vm.isNonInterruptiveSlash(text):
+            vm.transientHint = "Guidance queued — applies after the next tool call."
+            scheduleTransientHintClear(snapshot: vm.transientHint)
+        default:
+            break
         }
         // Project-scoped slash commands expand client-side: the user
         // bubble shows the literal `/<name> args` they typed (above);
@@ -1337,6 +1378,43 @@ final class ChatController {
             await vm.recordACPFailure(error, client: client)
             if case .ready = state {
                 state = .failed("Prompt failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Pull `(name, argTail)` out of a `/<name> [args]` invocation.
+    /// Mirror of `ChatViewModel.parseSlashName` on Mac. Returns
+    /// `(nil, "")` for non-slash input.
+    static func parseSlashName(_ text: String) -> (name: String?, args: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("/") else { return (nil, "") }
+        let withoutSlash = trimmed.dropFirst()
+        if let space = withoutSlash.firstIndex(of: " ") {
+            return (
+                name: String(withoutSlash[..<space]),
+                args: String(withoutSlash[withoutSlash.index(after: space)...])
+            )
+        }
+        return (name: String(withoutSlash), args: "")
+    }
+
+    /// Cap goal text in transient toasts so a 1 KB user-typed goal
+    /// doesn't blow out the hint pill. Mirror of
+    /// `ChatViewModel.truncatedToastGoal`.
+    static func truncatedToastGoal(_ text: String) -> String {
+        text.count <= 60 ? text : String(text.prefix(57)) + "…"
+    }
+
+    /// Auto-clear the chat composer's transient hint after 4s. Mirror
+    /// of `ChatViewModel.scheduleHintClear` — uses a value snapshot
+    /// rather than identity so a later toast that reuses the same
+    /// string still triggers the clear once the latest value matches.
+    @MainActor
+    private func scheduleTransientHintClear(snapshot: String?) {
+        Task { @MainActor [weak vm] in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            if vm?.transientHint == snapshot {
+                vm?.transientHint = nil
             }
         }
     }

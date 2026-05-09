@@ -248,14 +248,72 @@ public final class RichChatViewModel {
     /// Hermes v2026.4.23+ but listed here unconditionally so older
     /// hosts that don't advertise it still surface the trigger; the
     /// agent will respond appropriately or no-op gracefully.
+    ///
+    /// v2.8 / Hermes v0.13 adds `/goal` (lock the agent on a target
+    /// across turns) and `/queue` (queue a prompt for after the current
+    /// turn). Both ride the same `.acpNonInterruptive` source — Hermes
+    /// parses them server-side, the wire shape is plain
+    /// `session/prompt`, and the chat UI keeps the "Agent working…"
+    /// indicator off when they're sent. They're listed unconditionally
+    /// here; capability filtering happens in `availableCommands` so
+    /// pre-v0.13 hosts don't see `/goal` or `/queue` in the slash menu.
+    // TODO(WS-2-Q7): verify against a real v0.13 ACP host that `/goal`
+    // is in fact non-interruptive on the wire. If Hermes treats it as a
+    // regular prompt that flips "Agent working…", drop it from this
+    // list and route it through the standard send path (the pill
+    // bookkeeping in `recordActiveGoal` is independent of the
+    // interruptive classification).
     public static let nonInterruptiveCommands: [HermesSlashCommand] = [
         HermesSlashCommand(
             name: "steer",
             description: "Nudge the agent mid-run (applies after the next tool call)",
             argumentHint: "<guidance>",
             source: .acpNonInterruptive
+        ),
+        HermesSlashCommand(
+            name: "goal",
+            description: "Lock the agent on a goal that persists across turns",
+            argumentHint: "<text>",
+            source: .acpNonInterruptive
+        ),
+        HermesSlashCommand(
+            name: "queue",
+            description: "Queue a prompt to run after the current turn",
+            argumentHint: "<text>",
+            source: .acpNonInterruptive
         )
     ]
+
+    /// Capability snapshot the chat surface uses to filter
+    /// `availableCommands`. Set by the chat controller (Mac
+    /// `ChatViewModel`, iOS `ChatController`) at session-start time and
+    /// kept fresh via the `HermesCapabilitiesStore` env binding. Default
+    /// `.empty` means "no v0.13 surfaces" — pre-v0.13 hosts and harness
+    /// scenarios (Previews, smoke tests) never expose `/goal` or
+    /// `/queue` until the controller publishes a real capabilities
+    /// value. `@ObservationIgnored` so capability refreshes don't trash
+    /// the streaming-message render budget; controllers call
+    /// `publishCapabilities(_:)` once per refresh tick.
+    @ObservationIgnored
+    public var capabilitiesGate: HermesCapabilities = .empty
+
+    /// Optimistic local mirror of the agent's currently-locked goal.
+    /// Set by `recordActiveGoal(text:)` the moment the user sends
+    /// `/goal …`; cleared on `/goal --clear` or `reset()`. Pre-v0.13
+    /// hosts can't reach this code path (the slash menu hides `/goal`),
+    /// but a typed-out `/goal foo` against an older host would still
+    /// land here briefly until Hermes' "unknown command" reply lands —
+    /// see WS-2 plan "Inconsistency caveat".
+    public private(set) var activeGoal: HermesActiveGoal?
+
+    /// Optimistic mirror of prompts the user has queued via `/queue …`
+    /// while a turn is in flight. Hermes is the authoritative owner
+    /// server-side; this list drives the chat-header chip + popover and
+    /// drains FIFO via `popQueuedPrompt()` when a turn completes.
+    /// Best-effort: if Hermes' server-side queue gets out of sync
+    /// (deferred prompt aborted, dropped on disconnect) the user sees a
+    /// stale chip until their next interaction.
+    public private(set) var queuedPrompts: [HermesQueuedPrompt] = []
 
     /// Transient hint shown above the composer, e.g. "Guidance queued —
     /// applies after the next tool call." for `/steer`. The chat view
@@ -318,10 +376,92 @@ public final class RichChatViewModel {
             !acpNames.contains($0.name) && !projectNames.contains($0.name)
         }
         let occupied = acpNames.union(projectNames).union(Set(quicks.map(\.name)))
-        let nonInterruptive = Self.nonInterruptiveCommands.filter {
-            !occupied.contains($0.name)
+        // Capability gate: `/goal` and `/queue` are v0.13+ surfaces;
+        // hide them when the connected host is older. `/steer` is
+        // surfaced unconditionally — it works on v0.11+ during an
+        // active turn; idle-session greying for pre-v0.13 hosts is
+        // the input bar's concern (it reads `hasACPSteerOnIdle`).
+        let supported: [HermesSlashCommand] = Self.nonInterruptiveCommands.filter { cmd in
+            switch cmd.name {
+            case "goal":  return capabilitiesGate.hasGoals
+            case "queue": return capabilitiesGate.hasACPQueue
+            case "steer": return true
+            default:      return true
+            }
         }
+        let nonInterruptive = supported.filter { !occupied.contains($0.name) }
         return acpCommands + projectAsHermes + quicks + nonInterruptive
+    }
+
+    /// Publish a fresh capabilities snapshot from the controller.
+    /// Called whenever `HermesCapabilitiesStore.capabilities` changes
+    /// (initial detection, post-refresh, server switch). The chat input
+    /// bar's slash menu re-reads `availableCommands` lazily, so this is
+    /// just a stored-value swap — no observable churn.
+    public func publishCapabilities(_ caps: HermesCapabilities) {
+        capabilitiesGate = caps
+    }
+
+    /// Optimistic write triggered when the user sends `/goal <text>`.
+    /// Pass `nil` (or empty) to clear (the `/goal --clear` path). The
+    /// pill renders synchronously off this state; there is no
+    /// authoritative server read-back in v2.8.0 — see WS-2 plan Q1.
+    // TODO(WS-2-Q1): hook a Hermes-supplied goal-state read-back path
+    // here once we know whether v0.13 exposes goal state via an ACP
+    // session-startup notification, a session-sidecar JSON field, or a
+    // `/goal --status` reply. Until then `activeGoal` is purely
+    // user-set and does not survive a session resume.
+    public func recordActiveGoal(text: String?) {
+        if let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            activeGoal = HermesActiveGoal(
+                text: text.trimmingCharacters(in: .whitespacesAndNewlines),
+                setAt: Date()
+            )
+        } else {
+            activeGoal = nil
+        }
+    }
+
+    /// Append an optimistically-queued prompt to the local mirror
+    /// (driven by `/queue <text>`). No-op for empty / whitespace input.
+    public func recordQueuedPrompt(text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        queuedPrompts.append(HermesQueuedPrompt(text: trimmed))
+    }
+
+    /// Drain the next queued prompt off the local mirror, FIFO. Called
+    /// from `handlePromptComplete` once a turn settles — Hermes runs
+    /// the actual queued prompt server-side; popping here keeps the
+    /// header chip count honest. Returns the popped prompt for any
+    /// caller that wants to log it; the chat UI ignores the return.
+    @discardableResult
+    public func popQueuedPrompt() -> HermesQueuedPrompt? {
+        queuedPrompts.isEmpty ? nil : queuedPrompts.removeFirst()
+    }
+
+    /// Parse the argument slug from a `/goal …` invocation. Pure
+    /// function — exposed for unit tests. The chat dispatch reads this
+    /// to decide whether to set, clear, or no-op the optimistic pill.
+    public enum GoalCommandArgument: Equatable {
+        case set(String)
+        case clear
+        /// User typed `/goal` with no argument — Hermes will reply
+        /// with usage; Scarf shows a neutral hint and doesn't touch
+        /// the pill state.
+        case empty
+    }
+
+    public static func parseGoalArgument(_ raw: String) -> GoalCommandArgument {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return .empty }
+        // Accept `--clear`, `clear`, and case-insensitive variants so
+        // typos don't accidentally lock the goal text to literal
+        // "Clear". `--clear` is the canonical form (matches Hermes
+        // CLI flag style).
+        let lowered = trimmed.lowercased()
+        if lowered == "--clear" || lowered == "clear" { return .clear }
+        return .set(trimmed)
     }
 
     /// True when `text` is a non-interruptive command that should NOT
@@ -474,6 +614,14 @@ public final class RichChatViewModel {
         turnDurations = [:]
         transientHint = nil
         pendingPermission = nil
+        // v2.8 / Hermes v0.13 — drop optimistic v0.13 surfaces on
+        // session reset so a fresh chat (or a resume into a different
+        // session) doesn't paint stale goal / queue state from the
+        // previous one. The capabilities gate stays on whatever the
+        // controller most recently published; it's a host-level value
+        // that doesn't change with session boundaries.
+        activeGoal = nil
+        queuedPrompts = []
         loadQuickCommands()
     }
 
@@ -812,6 +960,22 @@ public final class RichChatViewModel {
         acpThoughtTokens += response.thoughtTokens
         acpCachedReadTokens += response.cachedReadTokens
         isAgentWorking = false
+        // v2.8 / Hermes v0.13 — Hermes runs the next `/queue`-deferred
+        // prompt server-side now that this turn has settled. Drain the
+        // local mirror FIFO so the header chip count matches what the
+        // user staged. Best-effort: if Hermes' authoritative queue
+        // diverged (deferred prompt aborted, dropped on disconnect),
+        // the chip is one tick stale until the user's next interaction.
+        if !queuedPrompts.isEmpty {
+            popQueuedPrompt()
+        }
+        // TODO(v2.8.1): when this completes after an auto-resumed
+        // checkpoint (Hermes v0.13's "Auto-resume interrupted sessions
+        // after gateway restart"), surface a one-shot "Auto-resumed
+        // from checkpoint" indicator. Wire-shape unknown until a v0.13
+        // dogfooding pass confirms whether the resume lands as a
+        // visible ACP event or is purely server-side. Deferred from
+        // v2.8.0 per WS-2 plan Q3.
         buildMessageGroups()
         // Final position after the prompt settles. Catches fast responses
         // (slash commands, short replies) where `.defaultScrollAnchor(.bottom)`

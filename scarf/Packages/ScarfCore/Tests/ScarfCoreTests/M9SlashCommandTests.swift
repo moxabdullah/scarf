@@ -241,6 +241,150 @@ import Foundation
         #expect(a == b)
     }
 
+    // MARK: - v0.13 non-interruptive commands (WS-2 / Persistent Goals + /queue)
+
+    @Test func nonInterruptiveListIncludesGoalAndQueue() {
+        let names = RichChatViewModel.nonInterruptiveCommands.map(\.name)
+        #expect(names.contains("steer"))
+        #expect(names.contains("goal"))
+        #expect(names.contains("queue"))
+    }
+
+    @MainActor
+    @Test func availableCommandsHidesGoalWhenCapabilityOff() {
+        let vm = RichChatViewModel(context: .local)
+        vm.publishCapabilities(.empty)
+        let names = vm.availableCommands.map(\.name)
+        #expect(!names.contains("goal"))
+    }
+
+    @MainActor
+    @Test func availableCommandsHidesQueueWhenCapabilityOff() {
+        let vm = RichChatViewModel(context: .local)
+        vm.publishCapabilities(.empty)
+        let names = vm.availableCommands.map(\.name)
+        #expect(!names.contains("queue"))
+    }
+
+    @MainActor
+    @Test func availableCommandsExposesAllThreeOnV013() {
+        let vm = RichChatViewModel(context: .local)
+        let caps = HermesCapabilities.parseLine("Hermes Agent v0.13.0 (2026.5.7)")
+        vm.publishCapabilities(caps)
+        let names = vm.availableCommands.map(\.name)
+        #expect(names.contains("steer"))
+        #expect(names.contains("goal"))
+        #expect(names.contains("queue"))
+    }
+
+    @MainActor
+    @Test func availableCommandsExposesSteerButHidesV013OnV012() {
+        let vm = RichChatViewModel(context: .local)
+        let caps = HermesCapabilities.parseLine("Hermes Agent v0.12.0 (2026.4.30)")
+        vm.publishCapabilities(caps)
+        let names = vm.availableCommands.map(\.name)
+        #expect(names.contains("steer"))
+        #expect(!names.contains("goal"))
+        #expect(!names.contains("queue"))
+    }
+
+    @Test func parseGoalArgumentRecognizesClearVariants() {
+        #expect(RichChatViewModel.parseGoalArgument("--clear") == .clear)
+        #expect(RichChatViewModel.parseGoalArgument("clear") == .clear)
+        #expect(RichChatViewModel.parseGoalArgument("Clear") == .clear)
+        #expect(RichChatViewModel.parseGoalArgument("  --clear  ") == .clear)
+    }
+
+    @Test func parseGoalArgumentReturnsSetForArbitraryText() {
+        #expect(
+            RichChatViewModel.parseGoalArgument("finish v2.8 on time")
+                == .set("finish v2.8 on time")
+        )
+        // Whitespace around set text is trimmed.
+        #expect(
+            RichChatViewModel.parseGoalArgument("   ship it   ")
+                == .set("ship it")
+        )
+    }
+
+    @Test func parseGoalArgumentReturnsEmptyForBlank() {
+        #expect(RichChatViewModel.parseGoalArgument("") == .empty)
+        #expect(RichChatViewModel.parseGoalArgument("   ") == .empty)
+        #expect(RichChatViewModel.parseGoalArgument("\n\t") == .empty)
+    }
+
+    @MainActor
+    @Test func recordActiveGoalSetsAndClears() {
+        let vm = RichChatViewModel(context: .local)
+        #expect(vm.activeGoal == nil)
+        vm.recordActiveGoal(text: "ship v2.8")
+        let goal = vm.activeGoal
+        #expect(goal?.text == "ship v2.8")
+        vm.recordActiveGoal(text: nil)
+        #expect(vm.activeGoal == nil)
+        // Empty / whitespace also clears.
+        vm.recordActiveGoal(text: "x")
+        vm.recordActiveGoal(text: "   ")
+        #expect(vm.activeGoal == nil)
+    }
+
+    @MainActor
+    @Test func recordQueuedPromptAppendsAndPopsFIFO() {
+        let vm = RichChatViewModel(context: .local)
+        vm.recordQueuedPrompt(text: "first")
+        vm.recordQueuedPrompt(text: "second")
+        vm.recordQueuedPrompt(text: "third")
+        #expect(vm.queuedPrompts.count == 3)
+        let popped = vm.popQueuedPrompt()
+        #expect(popped?.text == "first")
+        #expect(vm.queuedPrompts.count == 2)
+        let next = vm.popQueuedPrompt()
+        #expect(next?.text == "second")
+        #expect(vm.queuedPrompts.first?.text == "third")
+    }
+
+    @MainActor
+    @Test func recordQueuedPromptIgnoresBlank() {
+        let vm = RichChatViewModel(context: .local)
+        vm.recordQueuedPrompt(text: "")
+        vm.recordQueuedPrompt(text: "   ")
+        #expect(vm.queuedPrompts.isEmpty)
+    }
+
+    @MainActor
+    @Test func popQueuedPromptOnEmptyReturnsNil() {
+        let vm = RichChatViewModel(context: .local)
+        #expect(vm.popQueuedPrompt() == nil)
+    }
+
+    @Test func isNonInterruptiveSlashRecognizesGoalAndQueue() {
+        // Non-MainActor: the helper itself isn't MainActor-isolated;
+        // construct a VM on MainActor and read through it on the test
+        // actor to keep the assertion focused on classification.
+        Task { @MainActor in
+            let vm = RichChatViewModel(context: .local)
+            #expect(vm.isNonInterruptiveSlash("/goal finish v2.8"))
+            #expect(vm.isNonInterruptiveSlash("/queue summarize"))
+            #expect(vm.isNonInterruptiveSlash("/queue"))
+            #expect(vm.isNonInterruptiveSlash("/steer be careful"))
+            #expect(!vm.isNonInterruptiveSlash("hello"))
+            #expect(!vm.isNonInterruptiveSlash("/compress"))
+        }
+    }
+
+    @MainActor
+    @Test func resetClearsGoalAndQueue() {
+        let vm = RichChatViewModel(context: .local)
+        vm.recordActiveGoal(text: "x")
+        vm.recordQueuedPrompt(text: "a")
+        vm.recordQueuedPrompt(text: "b")
+        #expect(vm.activeGoal != nil)
+        #expect(vm.queuedPrompts.count == 2)
+        vm.reset()
+        #expect(vm.activeGoal == nil)
+        #expect(vm.queuedPrompts.isEmpty)
+    }
+
     // MARK: - Helpers
 
     static func makeTempProject() throws -> String {

@@ -11,6 +11,13 @@ struct SlashCommandMenu: View {
     /// Whether the agent advertised any commands at all. Lets us distinguish
     /// "agent hasn't sent commands yet" from "filter matched nothing".
     let agentHasCommands: Bool
+    /// Names that render greyed-out + ignore taps. v2.8 uses this only
+    /// for `/steer` on pre-v0.13 idle sessions; v0.13 hosts allow steer
+    /// on idle and the set is empty.
+    var disabledCommandNames: Set<String> = []
+    /// Tooltip shown on disabled rows. Reused per-row in v2.8 — only
+    /// one disabled case ships, so a single shared string is enough.
+    var disabledReason: String? = nil
     @Binding var selectedIndex: Int
     var onSelect: (HermesSlashCommand) -> Void
 
@@ -50,13 +57,17 @@ struct SlashCommandMenu: View {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(Array(commands.enumerated()), id: \.element.id) { index, command in
+                            let isDisabled = disabledCommandNames.contains(command.name)
                             SlashCommandRow(
                                 command: command,
-                                isSelected: index == selectedIndex
+                                isSelected: index == selectedIndex,
+                                isDisabled: isDisabled,
+                                disabledReason: isDisabled ? disabledReason : nil
                             )
                             .id(index)
                             .contentShape(Rectangle())
                             .onTapGesture {
+                                guard !isDisabled else { return }
                                 selectedIndex = index
                                 onSelect(command)
                             }
@@ -77,6 +88,8 @@ struct SlashCommandMenu: View {
 private struct SlashCommandRow: View {
     let command: HermesSlashCommand
     let isSelected: Bool
+    var isDisabled: Bool = false
+    var disabledReason: String? = nil
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -107,11 +120,19 @@ private struct SlashCommandRow: View {
                         .foregroundStyle(ScarfColor.foregroundMuted)
                         .lineLimit(2)
                 }
+                if isDisabled, let reason = disabledReason {
+                    Text(reason)
+                        .scarfStyle(.caption)
+                        .foregroundStyle(ScarfColor.foregroundFaint)
+                        .lineLimit(2)
+                }
             }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, ScarfSpace.s3)
         .padding(.vertical, ScarfSpace.s2)
         .background(isSelected ? ScarfColor.accentTint : Color.clear)
+        .opacity(isDisabled ? 0.55 : 1.0)
+        .help(isDisabled ? (disabledReason ?? "") : "")
     }
 }

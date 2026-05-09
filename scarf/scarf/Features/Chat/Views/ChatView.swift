@@ -5,6 +5,12 @@ struct ChatView: View {
     @Environment(ChatViewModel.self) private var viewModel
     @Environment(HermesFileWatcher.self) private var fileWatcher
     @Environment(AppCoordinator.self) private var coordinator
+    /// Capabilities store for the active server (injected on
+    /// `ContextBoundRoot`). Forwarded into `ChatViewModel` so the
+    /// rich-chat slash menu can gate v0.13 surfaces (`/goal`, `/queue`,
+    /// `/steer` on idle). Nil during harness scenarios; treated the
+    /// same as `.empty` capabilities.
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
     @State private var showErrorDetails = false
 
     /// Side-pane visibility toggles (issue #58). Drive the new
@@ -45,6 +51,15 @@ struct ChatView: View {
         .navigationTitle(
             viewModel.currentProjectName.map { "Chat · \($0)" } ?? "Chat"
         )
+        // Forward the env-injected capabilities store into the chat VM
+        // on every refresh tick so the rich-chat slash menu picks up
+        // v0.13 surfaces the moment the host advertises them. The id
+        // value is the capabilities-line string — a stable identity
+        // that flips exactly when the detector fires. Nil store ↔
+        // `.empty` capabilities, which is what the VM defaults to.
+        .task(id: capabilitiesStore?.capabilities.versionLine ?? "") {
+            viewModel.attachCapabilitiesStore(capabilitiesStore)
+        }
         .task {
             await viewModel.loadRecentSessions()
             viewModel.refreshCredentialPreflight()

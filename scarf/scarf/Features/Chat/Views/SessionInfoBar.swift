@@ -20,6 +20,17 @@ struct SessionInfoBar: View {
     /// name. Nil for non-project chats and for projects that aren't
     /// git repos.
     var gitBranch: String? = nil
+    /// Active locked goal (Hermes v0.13 `/goal`). Nil hides the pill.
+    /// Optimistic — set by `RichChatViewModel.recordActiveGoal(text:)`
+    /// when the user sends `/goal …`.
+    var activeGoal: HermesActiveGoal? = nil
+    /// Invoked when the user picks "Clear goal" from the goal pill's
+    /// context menu. Caller dispatches `/goal --clear` so the optimistic
+    /// pill clear and the server-side authoritative state stay in sync.
+    var onClearGoal: (() -> Void)? = nil
+    /// Local mirror of prompts queued via `/queue …` (Hermes v0.13).
+    /// Empty list hides the chip.
+    var queuedPrompts: [HermesQueuedPrompt] = []
 
     /// Active Hermes profile name (issue #50). Resolved on each body
     /// re-evaluation; the resolver caches for 5s so this is cheap.
@@ -60,6 +71,42 @@ struct SessionInfoBar: View {
                             .lineLimit(1)
                             .help("Project's current git branch")
                     }
+                }
+
+                // Goal pill (v2.8 / Hermes v0.13). `.info` keeps it
+                // visually decodable from the rust accent (project /
+                // branch) and the warning amber (queue chip). The
+                // pill renders only when `activeGoal` is non-nil —
+                // pre-v0.13 hosts can't reach the `/goal` send path
+                // through the slash menu (it's filtered out in
+                // `availableCommands`), so the pill stays absent there
+                // by transitive impossibility.
+                if let activeGoal {
+                    HStack(spacing: 4) {
+                        Image(systemName: "scope")
+                        Text(Self.truncatedGoal(activeGoal.text))
+                    }
+                    .scarfStyle(.caption)
+                    .padding(.horizontal, ScarfSpace.s2)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(ScarfColor.info.opacity(0.16)))
+                    .foregroundStyle(ScarfColor.info)
+                    .help("Goal locked: \(activeGoal.text)")
+                    .contextMenu {
+                        if let onClearGoal {
+                            Button("Clear goal", role: .destructive, action: onClearGoal)
+                        }
+                    }
+                }
+
+                // Queue chip (v2.8 / Hermes v0.13). Local mirror only —
+                // Hermes is the authoritative owner of the actual
+                // queue. Per-entry deletion isn't exposed (Hermes has
+                // no remove-by-id verb), and the v2.8.0 plan drops the
+                // global "Clear all" button to avoid lying about
+                // server-side state. The popover is read-only.
+                if !queuedPrompts.isEmpty {
+                    ChatQueueIndicator(queuedPrompts: queuedPrompts)
                 }
 
                 HStack(spacing: 4) {
@@ -133,5 +180,12 @@ struct SessionInfoBar: View {
 
     private func formatTokens(_ count: Int) -> String {
         count.formatted(.number.notation(.compactName).precision(.fractionLength(0...1)))
+    }
+
+    /// Cap goal text in the chip to keep the SessionInfoBar from
+    /// wrapping when the user locks a long goal. Full goal text is
+    /// available in the tooltip via `.help(...)`.
+    static func truncatedGoal(_ text: String) -> String {
+        text.count <= 36 ? text : String(text.prefix(33)) + "…"
     }
 }

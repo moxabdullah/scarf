@@ -21,7 +21,10 @@ struct ChatTranscriptPane: View {
                 acpOutputTokens: richChat.acpOutputTokens,
                 acpThoughtTokens: richChat.acpThoughtTokens,
                 projectName: chatViewModel.currentProjectName,
-                gitBranch: chatViewModel.currentGitBranch
+                gitBranch: chatViewModel.currentGitBranch,
+                activeGoal: richChat.activeGoal,
+                onClearGoal: { chatViewModel.sendText("/goal --clear") },
+                queuedPrompts: richChat.queuedPrompts
             )
             Divider()
 
@@ -58,7 +61,8 @@ struct ChatTranscriptPane: View {
                 onSend: onSend,
                 isEnabled: isEnabled,
                 commands: richChat.availableCommands,
-                showCompressButton: richChat.supportsCompress && !richChat.hasBroaderCommandMenu
+                showCompressButton: richChat.supportsCompress && !richChat.hasBroaderCommandMenu,
+                isAgentWorking: richChat.isAgentWorking
             )
             .id(richChat.sessionId ?? "scarf.chat.no-session")
         }
