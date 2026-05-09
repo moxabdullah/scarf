@@ -87,7 +87,16 @@ private struct SlashCommandRow: View {
                         .fontWeight(.semibold)
                         .foregroundStyle(isSelected ? ScarfColor.accentActive : ScarfColor.foregroundPrimary)
                     if let hint = command.argumentHint {
-                        Text("<\(hint)>")
+                        // v0.13: Hermes may emit hints already wrapped in
+                        // brackets (e.g. `[name]` for the optional `/new
+                        // <name>` argument exposed by `hasNewWithSessionName`).
+                        // Avoid double-wrapping — bracketed hints pass through
+                        // verbatim while older `guidance`-style hints (no
+                        // brackets) still render as `<guidance>`.
+                        let display = hint.hasPrefix("<") || hint.hasPrefix("[")
+                            ? hint
+                            : "<\(hint)>"
+                        Text(display)
                             .font(ScarfFont.monoSmall)
                             .foregroundStyle(ScarfColor.foregroundFaint)
                     }

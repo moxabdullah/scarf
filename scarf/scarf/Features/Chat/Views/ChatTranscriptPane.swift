@@ -11,6 +11,7 @@ struct ChatTranscriptPane: View {
     @Bindable var chatViewModel: ChatViewModel
     var onSend: (String, [ChatImageAttachment]) -> Void
     var isEnabled: Bool
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
 
     var body: some View {
         VStack(spacing: 0) {
@@ -20,8 +21,10 @@ struct ChatTranscriptPane: View {
                 acpInputTokens: richChat.acpInputTokens,
                 acpOutputTokens: richChat.acpOutputTokens,
                 acpThoughtTokens: richChat.acpThoughtTokens,
+                acpCompressionCount: richChat.acpCompressionCount,
                 projectName: chatViewModel.currentProjectName,
-                gitBranch: chatViewModel.currentGitBranch
+                gitBranch: chatViewModel.currentGitBranch,
+                capabilities: capabilitiesStore?.capabilities ?? .empty
             )
             Divider()
 

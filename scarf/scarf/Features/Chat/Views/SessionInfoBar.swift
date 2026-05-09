@@ -9,6 +9,11 @@ struct SessionInfoBar: View {
     var acpInputTokens: Int = 0
     var acpOutputTokens: Int = 0
     var acpThoughtTokens: Int = 0
+    /// Number of context compactions Hermes has run on this session. v0.13+
+    /// surface — capability-gated by the bar so pre-v0.13 hosts never see
+    /// the chip even if a stale value somehow trickles through. Defaults
+    /// to 0 so existing callers and previews don't need to be updated.
+    var acpCompressionCount: Int = 0
     /// Name of the Scarf project this session is attributed to, when
     /// applicable. Nil for plain global chats. Drives the folder-chip
     /// indicator rendered before the session title. Resolved by
@@ -20,6 +25,11 @@ struct SessionInfoBar: View {
     /// name. Nil for non-project chats and for projects that aren't
     /// git repos.
     var gitBranch: String? = nil
+    /// Capability snapshot for v0.13+ surfaces. Defaulted so previews and
+    /// pre-v0.13 hosts render the v2.7.5 layout unchanged. Coordinated
+    /// with WS-2 — both WSes add `capabilities` to this view; whichever
+    /// lands first establishes the prop.
+    var capabilities: HermesCapabilities = .empty
 
     /// Active Hermes profile name (issue #50). Resolved on each body
     /// re-evaluation; the resolver caches for 5s so this is cheap.
@@ -94,6 +104,21 @@ struct SessionInfoBar: View {
                 let reasonToks = session.reasoningTokens > 0 ? session.reasoningTokens : acpThoughtTokens
                 if reasonToks > 0 {
                     Label("\(formatTokens(reasonToks)) reasoning", systemImage: "brain")
+                }
+
+                // v0.13: Hermes surfaces a running count of automatic
+                // context compactions. Render only when the host is on
+                // v0.13+ AND the count is non-zero, so a pre-v0.13 host
+                // (which always reports 0) sees no chip, and a v0.13 host
+                // sees the chip the first time the agent compacts.
+                if capabilities.hasContextCompressionCount && acpCompressionCount > 0 {
+                    Label(
+                        "×\(acpCompressionCount)",
+                        systemImage: "arrow.down.right.and.arrow.up.left"
+                    )
+                    .scarfStyle(.caption)
+                    .foregroundStyle(ScarfColor.foregroundMuted)
+                    .help("Hermes auto-compacted this session's context \(acpCompressionCount) time\(acpCompressionCount == 1 ? "" : "s")")
                 }
 
                 if let cost = session.displayCostUSD {

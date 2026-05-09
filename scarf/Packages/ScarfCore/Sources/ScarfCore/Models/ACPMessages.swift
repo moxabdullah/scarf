@@ -243,19 +243,32 @@ public struct ACPPromptResult: Sendable {
     public let outputTokens: Int
     public let thoughtTokens: Int
     public let cachedReadTokens: Int
+    /// Number of automatic context compactions Hermes has performed on this
+    /// session so far. v0.13+ — older Hermes hosts always return 0, which
+    /// the chat status bar treats as "hide chip". Optional in the wire
+    /// payload; folded into a non-optional `Int` here with a 0 default so
+    /// the rest of the pipeline doesn't need to nil-check.
+    // TODO(WS-8-Q1): Verify that v0.13 Hermes emits the count on
+    // `session/prompt`'s `usage` blob (assumed here). If it lands on a
+    // separate `session/update` notification instead, this becomes a new
+    // ACPEvent case + a branch in RichChatViewModel.handleACPEvent — wire
+    // shape is documented in the WS-8 plan as the bigger fix path.
+    public let compressionCount: Int
 
     public init(
         stopReason: String,
         inputTokens: Int,
         outputTokens: Int,
         thoughtTokens: Int,
-        cachedReadTokens: Int
+        cachedReadTokens: Int,
+        compressionCount: Int = 0
     ) {
         self.stopReason = stopReason
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
         self.thoughtTokens = thoughtTokens
         self.cachedReadTokens = cachedReadTokens
+        self.compressionCount = compressionCount
     }
 }
 
