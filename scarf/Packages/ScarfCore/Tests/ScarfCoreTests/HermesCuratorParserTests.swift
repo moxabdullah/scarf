@@ -151,4 +151,169 @@ import Foundation
         #expect(parsed?.patchCount == 2)
         #expect(parsed?.lastActivityLabel == "2026-04-25")
     }
+
+    // MARK: - v0.13 list-archived / prune fixtures (WS-4)
+
+    /// Empty JSON array → `[]`. Locks in the happy-path no-archives shape.
+    @Test func listArchivedEmpty() throws {
+        let result = try CuratorService.parseListArchived(stdout: "[]")
+        #expect(result.isEmpty)
+    }
+
+    /// Three archives with full optional fields. Asserts each
+    /// optional value decodes through `decodeIfPresent` and that
+    /// the computed labels resolve.
+    @Test func listArchivedThreeSkills() throws {
+        let json = """
+        [
+          {
+            "name": "legacy-helper",
+            "category": "templates",
+            "archived_at": "2026-04-22T03:14:09Z",
+            "reason": "stale: 91d unused",
+            "size_bytes": 4521,
+            "path": "/Users/u/.hermes/skills/.archived/legacy-helper"
+          },
+          {
+            "name": "old-translator",
+            "category": "user",
+            "archived_at": "2026-04-23T10:00:00Z",
+            "reason": "consolidated with translator",
+            "size_bytes": 8192
+          },
+          {
+            "name": "minimal"
+          }
+        ]
+        """
+        let result = try CuratorService.parseListArchived(stdout: json)
+        #expect(result.count == 3)
+        #expect(result[0].name == "legacy-helper")
+        #expect(result[0].category == "templates")
+        #expect(result[0].reason == "stale: 91d unused")
+        #expect(result[0].sizeBytes == 4521)
+        #expect(result[0].archivedAtLabel == "2026-04-22")
+        #expect(result[0].path == "/Users/u/.hermes/skills/.archived/legacy-helper")
+
+        // Tolerant: only `name` set on the third row.
+        #expect(result[2].name == "minimal")
+        #expect(result[2].category == nil)
+        #expect(result[2].reason == nil)
+        #expect(result[2].archivedAtLabel == "—")
+        #expect(result[2].sizeLabel == "—")
+    }
+
+    /// `{"archived": [...]}` envelope is also accepted.
+    @Test func listArchivedEnvelope() throws {
+        let json = """
+        {"archived": [
+          {"name": "envelope-skill", "size_bytes": 1024}
+        ]}
+        """
+        let result = try CuratorService.parseListArchived(stdout: json)
+        #expect(result.count == 1)
+        #expect(result[0].name == "envelope-skill")
+    }
+
+    /// Text fallback when `--json` isn't supported. Each row carries
+    /// the name in column 1 plus k=v chips for the optional fields.
+    @Test func listArchivedTextFallback() {
+        let text = """
+          legacy-helper      archived=2026-04-22 size=4521 reason=stale
+          old-translator     archived=2026-04-23 size=8192
+          minimal-row
+        """
+        let result = CuratorService.parseListArchivedText(text)
+        #expect(result.count == 3)
+        #expect(result[0].name == "legacy-helper")
+        #expect(result[0].archivedAt == "2026-04-22")
+        #expect(result[0].sizeBytes == 4521)
+        #expect(result[0].reason == "stale")
+        #expect(result[2].name == "minimal-row")
+        #expect(result[2].sizeBytes == nil)
+    }
+
+    /// Empty-state sentinel folds to `[]` (parallel to KanbanService's
+    /// `"no matching tasks"` handling).
+    @Test func listArchivedNoArchivedSentinel() throws {
+        let result = try CuratorService.parseListArchived(stdout: "no archived skills\n")
+        #expect(result.isEmpty)
+    }
+
+    /// Whitespace-only stdout also folds to empty.
+    @Test func listArchivedWhitespaceFoldsToEmpty() throws {
+        let result = try CuratorService.parseListArchived(stdout: "   \n\n")
+        #expect(result.isEmpty)
+    }
+
+    /// Decode failure (clearly non-JSON, non-text) throws. We accept
+    /// JSON, the envelope, the empty sentinel, or text rows; anything
+    /// else surfaces as a `CuratorError.decoding`.
+    @Test func listArchivedNonsenseThrows() throws {
+        do {
+            _ = try CuratorService.parseListArchived(stdout: "{garbage")
+            Issue.record("expected decoding throw")
+        } catch let error as CuratorError {
+            if case .decoding = error {
+                // expected
+            } else {
+                Issue.record("unexpected error \(error)")
+            }
+        }
+    }
+
+    /// Prune-dry-run JSON with `would_remove` + `total_bytes`.
+    @Test func pruneDryRunHappyPath() {
+        let json = """
+        {
+          "would_remove": [
+            {"name": "stale-a", "size_bytes": 1000},
+            {"name": "stale-b", "size_bytes": 2000}
+          ],
+          "total_bytes": 3000
+        }
+        """
+        let summary = CuratorService.parsePruneDryRun(json)
+        #expect(summary.totalCount == 2)
+        #expect(summary.totalBytes == 3000)
+        #expect(summary.wouldRemove.first?.name == "stale-a")
+    }
+
+    /// Zero-skill prune is a valid dry-run (no archives).
+    @Test func pruneDryRunZeroSkills() {
+        let json = """
+        {"would_remove": [], "total_bytes": 0}
+        """
+        let summary = CuratorService.parsePruneDryRun(json)
+        #expect(summary.totalCount == 0)
+        #expect(summary.totalBytes == 0)
+        #expect(summary.totalBytesLabel == "—")
+    }
+
+    /// Bare-array fallback: some Hermes builds may print just the
+    /// would-remove list when the wrapper is missing.
+    @Test func pruneDryRunBareArrayFallback() {
+        let json = """
+        [{"name": "lonely", "size_bytes": 500}]
+        """
+        let summary = CuratorService.parsePruneDryRun(json)
+        #expect(summary.totalCount == 1)
+        #expect(summary.totalBytes == 500)
+    }
+
+    /// Empty / whitespace stdout → zero summary (no decoding throw).
+    @Test func pruneDryRunEmptyStaysSafe() {
+        let summary = CuratorService.parsePruneDryRun("   \n")
+        #expect(summary.totalCount == 0)
+        #expect(summary.totalBytes == 0)
+    }
+
+    /// Verify the size label uses the byte formatter (not raw bytes).
+    @Test func archivedSkillSizeLabelFormats() {
+        let big = HermesCuratorArchivedSkill(name: "x", sizeBytes: 1_500_000)
+        // ByteCountFormatter produces a localized label; just verify
+        // it's non-empty and not raw "1500000".
+        #expect(!big.sizeLabel.isEmpty)
+        #expect(big.sizeLabel != "1500000")
+    }
 }

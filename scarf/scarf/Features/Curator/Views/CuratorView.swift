@@ -2,22 +2,36 @@ import SwiftUI
 import ScarfCore
 import ScarfDesign
 
-/// Mac UI for Hermes v0.12's autonomous skill curator.
+/// Mac UI for Hermes's autonomous skill curator (v0.12 base + v0.13
+/// archive/prune surface).
 ///
 /// Surfaces the running state (enabled / paused / disabled), last-run
-/// metadata, agent-created skill counts, and the most/least-active /
-/// least-recently-active leaderboards. Pin-and-restore actions hit
-/// `hermes curator pin/unpin/restore` via CuratorViewModel.
+/// metadata, agent-created skill counts, the most/least-active /
+/// least-recently-active leaderboards, and on v0.13+ hosts the new
+/// archived-skills section + per-row Archive button on each leaderboard
+/// entry. Pin / unpin / restore / archive / prune route through
+/// CuratorViewModel → CuratorService.
 ///
 /// Capability-gated upstream: AppCoordinator only wires the sidebar
-/// item when `HermesCapabilities.hasCurator` is true. This view assumes
-/// it's reachable on a v0.12+ host.
+/// item when `HermesCapabilities.hasCurator` is true. Archive surfaces
+/// gate independently on `hasCuratorArchive`; pre-v0.13 hosts see the
+/// v2.7.x layout unchanged (legacy `CuratorRestoreSheet` reachable from
+/// the overflow menu, no Archive section, fire-and-forget Run Now).
 struct CuratorView: View {
     @State private var viewModel: CuratorViewModel
     @State private var showRestoreSheet = false
 
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
+
     init(context: ServerContext) {
         _viewModel = State(initialValue: CuratorViewModel(context: context))
+    }
+
+    /// Single source of truth for "v0.13 archive surface visible". Read
+    /// once in `body` and threaded into sub-views. Defensive default to
+    /// `false` so previews / smoke tests behave like a pre-v0.13 host.
+    private var archiveAvailable: Bool {
+        capabilitiesStore?.capabilities.hasCuratorArchive ?? false
     }
 
     var body: some View {
@@ -25,34 +39,15 @@ struct CuratorView: View {
             VStack(alignment: .leading, spacing: ScarfSpace.s4) {
                 ScarfPageHeader(
                     "Curator",
-                    subtitle: "Autonomous skill maintenance — Hermes v0.12+"
+                    subtitle: archiveAvailable
+                        ? "Autonomous skill maintenance — archive, prune, restore"
+                        : "Autonomous skill maintenance — Hermes v0.12+"
                 ) {
-                    HStack(spacing: ScarfSpace.s2) {
-                        if viewModel.isLoading {
-                            ProgressView().controlSize(.small)
-                        }
-                        Button("Run Now") {
-                            Task { await viewModel.runNow() }
-                        }
-                        .buttonStyle(ScarfPrimaryButton())
-                        .disabled(viewModel.isLoading)
-                        Menu {
-                            switch viewModel.status.state {
-                            case .paused:
-                                Button("Resume") { Task { await viewModel.resume() } }
-                            case .enabled:
-                                Button("Pause") { Task { await viewModel.pause() } }
-                            default:
-                                EmptyView()
-                            }
-                            Button("Restore Archived…") {
-                                showRestoreSheet = true
-                            }
-                            .disabled(viewModel.status.archivedSkills == 0)
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
-                        }
-                    }
+                    headerActions
+                }
+
+                if let errorMessage = viewModel.errorMessage {
+                    errorBanner(errorMessage)
                 }
 
                 if let toast = viewModel.transientMessage {
@@ -64,6 +59,19 @@ struct CuratorView: View {
                 pinnedSection
                 activityTables
 
+                if archiveAvailable {
+                    CuratorArchivedSection(
+                        archived: viewModel.archivedSkills,
+                        isLoading: viewModel.isLoadingArchive,
+                        onRestore: { name in
+                            Task { await viewModel.restore(name) }
+                        },
+                        onPruneAll: {
+                            Task { await viewModel.planPrune() }
+                        }
+                    )
+                }
+
                 if let report = viewModel.lastReportMarkdown {
                     lastReportSection(markdown: report)
                 }
@@ -71,9 +79,83 @@ struct CuratorView: View {
             .padding(ScarfSpace.s4)
         }
         .background(ScarfColor.backgroundPrimary)
-        .task { await viewModel.load() }
+        .task {
+            await viewModel.load()
+            if archiveAvailable {
+                await viewModel.loadArchive()
+            }
+        }
         .sheet(isPresented: $showRestoreSheet) {
             CuratorRestoreSheet(viewModel: viewModel)
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { viewModel.pruneSummary != nil },
+                set: { isShown in
+                    if !isShown { viewModel.cancelPrune() }
+                }
+            )
+        ) {
+            if let summary = viewModel.pruneSummary {
+                CuratorPruneConfirmSheet(
+                    summary: summary,
+                    isPruning: viewModel.isPruning,
+                    onConfirm: {
+                        Task { await viewModel.confirmPrune() }
+                    },
+                    onCancel: {
+                        viewModel.cancelPrune()
+                    }
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var headerActions: some View {
+        HStack(spacing: ScarfSpace.s2) {
+            if viewModel.isLoading {
+                ProgressView().controlSize(.small)
+            }
+            Button("Run Now") {
+                Task {
+                    await viewModel.runNow(
+                        synchronous: archiveAvailable,
+                        timeout: 600
+                    )
+                }
+            }
+            .buttonStyle(ScarfPrimaryButton())
+            .disabled(viewModel.isLoading)
+            .help(archiveAvailable
+                ? "Curator runs synchronously on Hermes v0.13+. Usually 10–90s."
+                : "Trigger a curator run. Returns immediately on pre-v0.13 hosts.")
+
+            Menu {
+                switch viewModel.status.state {
+                case .paused:
+                    Button("Resume") { Task { await viewModel.resume() } }
+                case .enabled:
+                    Button("Pause") { Task { await viewModel.pause() } }
+                default:
+                    EmptyView()
+                }
+
+                if archiveAvailable {
+                    Divider()
+                    Button("Prune Archived…", role: .destructive) {
+                        Task { await viewModel.planPrune() }
+                    }
+                    .disabled(viewModel.archivedSkills.isEmpty && !viewModel.isLoadingArchive)
+                } else {
+                    Button("Restore Archived…") {
+                        showRestoreSheet = true
+                    }
+                    .disabled(viewModel.status.archivedSkills == 0)
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
         }
     }
 
@@ -206,10 +288,33 @@ struct CuratorView: View {
                         }
                         .buttonStyle(.plain)
                         .help(viewModel.status.pinnedNames.contains(row.name) ? "Pinned" : "Pin skill")
+
+                        if archiveAvailable {
+                            archiveButton(for: row.name)
+                        }
                     }
                     .padding(.vertical, 2)
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func archiveButton(for name: String) -> some View {
+        if viewModel.pendingArchiveName == name {
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: 14, height: 14)
+        } else {
+            Button {
+                Task { await viewModel.archive(name) }
+            } label: {
+                Image(systemName: "archivebox")
+                    .font(.system(size: 12))
+            }
+            .buttonStyle(.plain)
+            .help("Archive (move out of active set)")
+            .disabled(viewModel.pendingArchiveName != nil)
         }
     }
 
@@ -276,6 +381,35 @@ struct CuratorView: View {
         .padding(.vertical, 6)
         .background(ScarfColor.accentTint)
         .clipShape(RoundedRectangle(cornerRadius: ScarfRadius.md))
+    }
+
+    /// Inline yellow banner for CLI failures. Non-blocking — sits above
+    /// the status summary and dismisses with the "x" so users can keep
+    /// interacting with the leaderboard. Mirrors the pattern in
+    /// KanbanBoardView.
+    private func errorBanner(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: ScarfSpace.s2) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(ScarfColor.warning)
+            Text(message)
+                .scarfStyle(.caption)
+                .foregroundStyle(ScarfColor.foregroundPrimary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                viewModel.dismissError()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(ScarfColor.foregroundMuted)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, ScarfSpace.s3)
+        .padding(.vertical, ScarfSpace.s2)
+        .background(
+            RoundedRectangle(cornerRadius: ScarfRadius.md)
+                .fill(ScarfColor.warning.opacity(0.12))
+        )
     }
 }
 

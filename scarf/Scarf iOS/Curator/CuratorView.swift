@@ -13,9 +13,22 @@ import ScarfDesign
 /// `HermesCapabilities.hasCurator` is true.
 struct CuratorView: View {
     @State private var viewModel: CuratorViewModel
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
+
+    // TODO(WS-9): add a read-only "Archived" section mirroring the Mac
+    // surface (no per-row Restore/Prune mutations on iOS in this
+    // release). Gate on `capabilitiesStore?.capabilities.hasCuratorArchive`.
 
     init(context: ServerContext) {
         _viewModel = State(initialValue: CuratorViewModel(context: context))
+    }
+
+    /// Whether the connected host runs curator synchronously. Threaded
+    /// into `runNow` so v0.13+ hosts block-with-spinner; pre-v0.13 fire
+    /// and forget. WS-9 will surface a richer iOS progress affordance
+    /// alongside the read-only Archived section.
+    private var archiveAvailable: Bool {
+        capabilitiesStore?.capabilities.hasCuratorArchive ?? false
     }
 
     var body: some View {
@@ -115,7 +128,7 @@ struct CuratorView: View {
     private var actionFooter: some View {
         HStack(spacing: 8) {
             Button {
-                Task { await viewModel.runNow() }
+                Task { await viewModel.runNow(synchronous: archiveAvailable, timeout: 600) }
             } label: {
                 Label("Run now", systemImage: "play.fill")
             }

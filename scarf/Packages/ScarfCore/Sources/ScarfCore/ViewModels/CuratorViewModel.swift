@@ -4,17 +4,19 @@ import Observation
 import os
 #endif
 
-/// Mac + iOS view model for the v0.12 Curator surface.
+/// Mac + iOS view model for the Curator surface (v0.12 base + v0.13
+/// archive/prune additions).
 ///
 /// Drives `hermes curator status / run / pause / resume / pin / unpin /
-/// restore` plus a parsed view of `~/.hermes/skills/.curator_state`
-/// JSON. The CLI doesn't ship a `--json` flag for `status`, so we
-/// text-parse stdout (HermesCuratorStatusParser) and use the state
-/// file for richer last-run metadata.
+/// restore` plus (v0.13+) `archive`, `prune`, `list-archived`. All CLI
+/// invocations route through `CuratorService` (the actor) so polling
+/// and writes share the same concurrency model and a single error path.
 ///
 /// Capability-gated: callers should construct this only when
-/// `HermesCapabilities.hasCurator` is true. The view model does not
-/// gate itself — the gate happens at sidebar/tab routing time.
+/// `HermesCapabilities.hasCurator` is true. Archive-aware UI surfaces
+/// (Archive button, Archived section, Prune…) gate independently on
+/// `hasCuratorArchive`. The view model itself doesn't gate — it exposes
+/// every method and the View decides what to render.
 @Observable
 @MainActor
 public final class CuratorViewModel {
@@ -27,20 +29,50 @@ public final class CuratorViewModel {
     public private(set) var status: HermesCuratorStatus = .empty
     public private(set) var isLoading = false
     public private(set) var lastReportMarkdown: String?
+
+    // Archive state (v0.13+ only — populated by `loadArchive()` on hosts
+    // where `hasCuratorArchive` is true).
+    public private(set) var archivedSkills: [HermesCuratorArchivedSkill] = []
+    public private(set) var isLoadingArchive = false
+
+    // Prune state — `pruneSummary` non-nil while the confirm sheet is
+    // mid-flight; `isPruning` flips during the destructive step.
+    public private(set) var pruneSummary: CuratorPruneSummary?
+    public private(set) var isPruning = false
+
+    // Track which active-skill row is currently being archived so the
+    // row chrome can show an inline spinner without blocking the rest.
+    public private(set) var pendingArchiveName: String?
+
+    /// Happy-path success toast ("Pinned X", "Resumed", "Archived
+    /// legacy-helper"). Auto-clears 3s after assignment.
     public var transientMessage: String?
+
+    /// Failure path — populated by every CLI verb when it throws. Shown
+    /// as an inline yellow banner above the status summary so users
+    /// don't have to dismiss a modal alert during a high-frequency
+    /// surface like the leaderboard. Manually dismissed via the View's
+    /// "x" button (sets to nil).
+    public var errorMessage: String?
+
+    @ObservationIgnored
+    private let service: CuratorService
 
     public init(context: ServerContext) {
         self.context = context
+        self.service = CuratorService(context: context)
     }
+
+    // MARK: - Loads
 
     public func load() async {
         isLoading = true
         defer { isLoading = false }
         let context = self.context
         // v2.8 — instrumented. Curator load fires `hermes curator
-        // status` (CLI subprocess) plus 1-2 file reads; on remote
-        // each is a separate SSH RTT. Visibility lets future captures
-        // show how often the report file is missing or oversized.
+        // status` (CLI subprocess) plus 1-2 file reads; on remote each
+        // is a separate SSH RTT. Visibility lets future captures show
+        // how often the report file is missing or oversized.
         let parsed = await ScarfMon.measureAsync(.diskIO, "curator.load") {
             await Task.detached(priority: .userInitiated) { () -> (HermesCuratorStatus, String?) in
                 let textResult = Self.runCuratorStatus(context: context)
@@ -69,46 +101,156 @@ public final class CuratorViewModel {
         self.lastReportMarkdown = parsed.1
     }
 
-    public func runNow() async {
-        await runAndReload(args: ["curator", "run"], successMessage: "Curator run started")
+    /// Refresh the archived-skills list. No-op on hosts without
+    /// `hasCuratorArchive` — the caller gates the call.
+    public func loadArchive() async {
+        isLoadingArchive = true
+        defer { isLoadingArchive = false }
+        do {
+            archivedSkills = try await service.listArchived()
+        } catch {
+            archivedSkills = []
+            errorMessage = (error as? LocalizedError)?.errorDescription
+                ?? error.localizedDescription
+        }
+    }
+
+    // MARK: - Writes (v0.12)
+
+    /// Run the curator manually. On v0.13+ hosts this blocks for the
+    /// duration of the run (default 600s timeout); pre-v0.13 returns
+    /// immediately. Caller passes the capability-decided flag.
+    public func runNow(synchronous: Bool, timeout: TimeInterval = 600) async {
+        await runWithReload(
+            verb: "run",
+            successMessage: synchronous ? "Curator run complete" : "Curator run started"
+        ) {
+            try await self.service.runNow(synchronous: synchronous, timeout: timeout)
+        }
     }
 
     public func pause() async {
-        await runAndReload(args: ["curator", "pause"], successMessage: "Curator paused")
+        await runWithReload(verb: "pause", successMessage: "Curator paused") {
+            try await self.service.pause()
+        }
     }
 
     public func resume() async {
-        await runAndReload(args: ["curator", "resume"], successMessage: "Curator resumed")
+        await runWithReload(verb: "resume", successMessage: "Curator resumed") {
+            try await self.service.resume()
+        }
     }
 
     public func pin(_ skill: String) async {
-        await runAndReload(args: ["curator", "pin", skill], successMessage: "Pinned \(skill)")
+        await runWithReload(verb: "pin", successMessage: "Pinned \(skill)") {
+            try await self.service.pin(skill)
+        }
     }
 
     public func unpin(_ skill: String) async {
-        await runAndReload(args: ["curator", "unpin", skill], successMessage: "Unpinned \(skill)")
+        await runWithReload(verb: "unpin", successMessage: "Unpinned \(skill)") {
+            try await self.service.unpin(skill)
+        }
     }
 
     public func restore(_ skill: String) async {
-        await runAndReload(args: ["curator", "restore", skill], successMessage: "Restored \(skill)")
+        await runWithReload(verb: "restore", successMessage: "Restored \(skill)") {
+            try await self.service.restore(skill)
+        }
+        // Restore drops the entry from the archived list — refresh it
+        // so the row disappears immediately.
+        await loadArchive()
     }
 
-    private func runAndReload(args: [String], successMessage: String) async {
-        let context = self.context
-        let exitCode = await Task.detached(priority: .userInitiated) {
-            Self.runHermes(context: context, args: args).exitCode
-        }.value
-        transientMessage = exitCode == 0 ? successMessage : "Command failed"
-        await load()
-        // Auto-clear toast after 3s.
+    // MARK: - Writes (v0.13)
+
+    public func archive(_ skill: String) async {
+        pendingArchiveName = skill
+        await runWithReload(verb: "archive", successMessage: "Archived \(skill)") {
+            try await self.service.archive(skill)
+        }
+        pendingArchiveName = nil
+        await loadArchive()
+    }
+
+    /// Stage 1 of the bulk-prune flow. Calls `prune --dry-run` and
+    /// populates `pruneSummary`; the View binds its confirm sheet to
+    /// the non-nil presence of this property.
+    public func planPrune() async {
+        do {
+            pruneSummary = try await service.prune(dryRun: true)
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription
+                ?? error.localizedDescription
+            pruneSummary = nil
+        }
+    }
+
+    /// Stage 2 of the bulk-prune flow. Destructive — removes everything
+    /// currently archived. Clears `pruneSummary` regardless of outcome
+    /// so the confirm sheet dismisses.
+    public func confirmPrune() async {
+        isPruning = true
+        do {
+            _ = try await service.prune(dryRun: false)
+            transientMessage = "Pruned archived skills"
+            errorMessage = nil
+            await loadArchive()
+            await load()
+            scheduleTransientClear()
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription
+                ?? error.localizedDescription
+        }
+        isPruning = false
+        pruneSummary = nil
+    }
+
+    /// Cancel the in-flight prune-confirm flow without running.
+    public func cancelPrune() {
+        pruneSummary = nil
+    }
+
+    /// User-driven dismissal of the inline error banner.
+    public func dismissError() {
+        errorMessage = nil
+    }
+
+    // MARK: - Helpers
+
+    /// Run a service call, route success → `transientMessage`, failure
+    /// → `errorMessage`, and reload `status` either way. Mirrors the
+    /// previous `runAndReload` helper but goes through the typed
+    /// service surface.
+    private func runWithReload(
+        verb: String,
+        successMessage: String,
+        body: @escaping @Sendable () async throws -> Void
+    ) async {
+        do {
+            try await body()
+            transientMessage = successMessage
+            errorMessage = nil
+            await load()
+            scheduleTransientClear()
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription
+                ?? error.localizedDescription
+            errorMessage = message
+            transientMessage = nil
+            await load()
+        }
+    }
+
+    private func scheduleTransientClear() {
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             self?.transientMessage = nil
         }
     }
 
-    /// Wrap the transport-level `runProcess` so the call sites don't
-    /// have to reach for it directly. Combined stdout+stderr.
+    // MARK: - Legacy sync helpers (kept for `load`'s detached path)
+
     nonisolated private static func runHermes(
         context: ServerContext,
         args: [String]

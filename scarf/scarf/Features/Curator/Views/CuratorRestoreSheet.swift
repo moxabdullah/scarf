@@ -2,18 +2,16 @@ import SwiftUI
 import ScarfCore
 import ScarfDesign
 
-/// Modal that lists archived skills (state ≠ active) and exposes a
-/// one-click "Restore" action per row. v0.12 archives are recoverable —
-/// `hermes curator restore <name>` brings the skill back into
-/// `~/.hermes/skills/<category>/<name>/` and re-marks it active.
+/// Legacy v0.12 fallback for restoring an archived skill by typed
+/// name. Hermes v0.12 didn't ship `curator list-archived`, so the only
+/// way to restore was to remember the skill name and pass it through
+/// `hermes curator restore <name>`.
 ///
-/// The Curator's `status` text doesn't enumerate archived skills with
-/// names; we surface what's available (counts + pinned list) and rely
-/// on the user knowing the names. Hermes ergo does an interactive
-/// `--name` arg if missing — but Scarf prefers explicit selection so
-/// users don't have to remember names. For v2.6 we render a free-form
-/// text field; once Hermes ships a `curator list-archived` (tracked
-/// upstream), swap to a pickable list.
+/// **v0.13+ flow (preferred):** `CuratorArchivedSection` renders a
+/// per-skill list with a one-click Restore button per row — no typing
+/// required. This sheet stays reachable from the overflow menu only on
+/// pre-v0.13 hosts (gated by `!hasCuratorArchive`). Don't delete this
+/// file even after WS-4 ships; v0.12 hosts still depend on it.
 struct CuratorRestoreSheet: View {
     let viewModel: CuratorViewModel
 
