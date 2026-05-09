@@ -24,6 +24,19 @@ public struct HermesKanbanRun: Sendable, Equatable, Identifiable, Codable {
     /// raw string so we don't lock the typed shape.
     public let metadataJSON: String?
 
+    // v0.13 (v2026.5.7) fields. Both Optional / empty-default so a v0.12
+    // host's run row decodes without error.
+    /// Per-attempt distress signals. Cross-run signals (retry cap hit,
+    /// etc.) hang off `HermesKanbanTask.diagnostics`; in-flight signals
+    /// (heartbeat stalled, darwin zombie detected) attach here.
+    public let diagnostics: [HermesKanbanDiagnostic]
+    /// Server-side unified failure counter (renamed from three separate
+    /// spawn / timeout / crash counters in v0.13). Optional — when nil,
+    /// callers fall back to counting failed runs in the runs array.
+    // TODO(WS-3-Q4): Verify whether v0.13 exposes this field on the per-run
+    // shape OR only at the task level. Tolerant decode handles either.
+    public let failureCount: Int?
+
     public init(
         id: Int,
         taskId: String,
@@ -40,7 +53,9 @@ public struct HermesKanbanRun: Sendable, Equatable, Identifiable, Codable {
         outcome: String? = nil,
         summary: String? = nil,
         error: String? = nil,
-        metadataJSON: String? = nil
+        metadataJSON: String? = nil,
+        diagnostics: [HermesKanbanDiagnostic] = [],
+        failureCount: Int? = nil
     ) {
         self.id = id
         self.taskId = taskId
@@ -58,6 +73,8 @@ public struct HermesKanbanRun: Sendable, Equatable, Identifiable, Codable {
         self.summary = summary
         self.error = error
         self.metadataJSON = metadataJSON
+        self.diagnostics = diagnostics
+        self.failureCount = failureCount
     }
 
     enum CodingKeys: String, CodingKey {
@@ -77,6 +94,8 @@ public struct HermesKanbanRun: Sendable, Equatable, Identifiable, Codable {
         case summary
         case error
         case metadata
+        case diagnostics
+        case failureCount = "failure_count"
     }
 
     public init(from decoder: any Decoder) throws {
@@ -120,6 +139,11 @@ public struct HermesKanbanRun: Sendable, Equatable, Identifiable, Codable {
         } else {
             self.metadataJSON = nil
         }
+
+        // v0.13 diagnostics array — `try?` so a malformed entry doesn't
+        // poison the whole run row. Empty default for pre-v0.13 hosts.
+        self.diagnostics = (try? c.decodeIfPresent([HermesKanbanDiagnostic].self, forKey: .diagnostics)) ?? []
+        self.failureCount = try c.decodeIfPresent(Int.self, forKey: .failureCount)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -140,5 +164,7 @@ public struct HermesKanbanRun: Sendable, Equatable, Identifiable, Codable {
         try c.encodeIfPresent(summary, forKey: .summary)
         try c.encodeIfPresent(error, forKey: .error)
         try c.encodeIfPresent(metadataJSON, forKey: .metadata)
+        try c.encode(diagnostics, forKey: .diagnostics)
+        try c.encodeIfPresent(failureCount, forKey: .failureCount)
     }
 }

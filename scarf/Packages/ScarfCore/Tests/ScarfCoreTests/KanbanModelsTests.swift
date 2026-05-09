@@ -327,4 +327,196 @@ import Foundation
         #expect(stats.glanceString.isEmpty)
         #expect(stats.activeCount == 0)
     }
+
+    // MARK: - v0.13 (Hermes 2026.5.7) tolerant decode
+    //
+    // The contract these tests pin: a v0.13 host's task / run / detail
+    // JSON decodes successfully WITH the new fields populated, AND a
+    // pre-v0.13 (v0.12) host's task / run / detail JSON decodes
+    // successfully WITHOUT the new fields (everything resolves to nil
+    // or empty). Drift from this pair = a regression that bites every
+    // user not yet on Hermes v0.13.
+
+    @Test func decodeV013TaskFields() throws {
+        let json = """
+        {
+          "id": "t_v013",
+          "title": "v0.13 task",
+          "status": "blocked",
+          "max_retries": 5,
+          "auto_blocked_reason": "worker exited without `kanban complete`",
+          "hallucination_gate_status": "pending",
+          "diagnostics": [
+            {"kind": "worker_exit_no_complete", "message": "exit code 0 with no complete call", "detected_at": 1778160614},
+            {"kind": "darwin_zombie_detected", "detected_at": "2026-05-09T12:00:00Z"}
+          ]
+        }
+        """
+        let task = try JSONDecoder().decode(HermesKanbanTask.self, from: Data(json.utf8))
+        #expect(task.maxRetries == 5)
+        #expect(task.autoBlockedReason?.contains("kanban complete") == true)
+        #expect(task.hallucinationGateStatus == "pending")
+        #expect(task.diagnostics.count == 2)
+        #expect(task.diagnostics.first?.kind == "worker_exit_no_complete")
+        #expect(task.diagnostics.last?.detectedAt?.contains("2026") == true)
+    }
+
+    @Test func decodeV012TaskHasNoNewFields() throws {
+        // The most damaging failure mode is a v0.12 user upgrading Scarf
+        // and having the board stop loading because a v0.13-only field
+        // is required. Pin the contract.
+        let json = """
+        {"id": "t_legacy", "title": "v0.12 task", "status": "ready"}
+        """
+        let task = try JSONDecoder().decode(HermesKanbanTask.self, from: Data(json.utf8))
+        #expect(task.maxRetries == nil)
+        #expect(task.autoBlockedReason == nil)
+        #expect(task.hallucinationGateStatus == nil)
+        #expect(task.diagnostics.isEmpty)
+    }
+
+    @Test func decodeMalformedDiagnosticTolerated() throws {
+        // If Hermes emits a malformed diagnostics value, the rest of the
+        // task should still decode. We use try? on the diagnostics decode
+        // so a single bad entry doesn't reject the whole row.
+        let json = """
+        {
+          "id": "t_x",
+          "title": "x",
+          "status": "ready",
+          "diagnostics": "not-an-array"
+        }
+        """
+        let task = try JSONDecoder().decode(HermesKanbanTask.self, from: Data(json.utf8))
+        #expect(task.id == "t_x")
+        // Diagnostics field couldn't decode — treat as empty.
+        #expect(task.diagnostics.isEmpty)
+    }
+
+    @Test func hallucinationGateMirrorMapsKnownValues() {
+        #expect(KanbanHallucinationGate.from("pending") == .pending)
+        #expect(KanbanHallucinationGate.from("verified") == .verified)
+        #expect(KanbanHallucinationGate.from("REJECTED") == .rejected)  // case-insensitive
+        #expect(KanbanHallucinationGate.from(nil) == nil)
+        #expect(KanbanHallucinationGate.from("") == nil)
+        // Unknown wire values fall through to nil so the banner stays
+        // hidden; future Hermes versions can add `quarantined` etc.
+        // without a Scarf release.
+        #expect(KanbanHallucinationGate.from("quarantined") == nil)
+    }
+
+    @Test func diagnosticKindMirrorMapsKnownValues() {
+        #expect(KanbanDiagnosticKind.from("heartbeat_stalled") == .heartbeatStalled)
+        #expect(KanbanDiagnosticKind.from("DARWIN_ZOMBIE_DETECTED") == .darwinZombieDetected)
+        // Unknown kinds fall through to .unknown so views can render
+        // the raw string verbatim.
+        #expect(KanbanDiagnosticKind.from("future_kind_v014") == .unknown)
+    }
+
+    @Test func diagnosticSeverityMapping() {
+        #expect(KanbanDiagnosticKind.retryCapHit.severity == .danger)
+        #expect(KanbanDiagnosticKind.darwinZombieDetected.severity == .danger)
+        #expect(KanbanDiagnosticKind.heartbeatStalled.severity == .warning)
+        #expect(KanbanDiagnosticKind.workerExitNoComplete.severity == .warning)
+        #expect(KanbanDiagnosticKind.unknown.severity == .neutral)
+    }
+
+    @Test func createRequestArgvIncludesMaxRetries() {
+        let req = KanbanCreateRequest(title: "t", maxRetries: 5)
+        let argv = req.argv()
+        #expect(argv.contains("--max-retries"))
+        #expect(argv.contains("5"))
+    }
+
+    @Test func createRequestArgvOmitsMaxRetriesWhenAbsent() {
+        let req = KanbanCreateRequest(title: "t")
+        let argv = req.argv()
+        #expect(!argv.contains("--max-retries"))
+    }
+
+    @Test func decodeRunWithDiagnostics() throws {
+        let json = """
+        {
+          "id": 1,
+          "task_id": "t_x",
+          "status": "failed",
+          "started_at": 1778160000,
+          "ended_at": 1778160300,
+          "outcome": "crashed",
+          "error": "OOM",
+          "diagnostics": [
+            {"kind": "retry_cap_hit", "message": "3/3 retries exhausted"}
+          ],
+          "failure_count": 3
+        }
+        """
+        let run = try JSONDecoder().decode(HermesKanbanRun.self, from: Data(json.utf8))
+        #expect(run.diagnostics.count == 1)
+        #expect(run.diagnostics.first?.kind == "retry_cap_hit")
+        #expect(run.failureCount == 3)
+    }
+
+    @Test func decodeRunWithoutDiagnostics() throws {
+        // v0.12 run row — no diagnostics, no failure_count, must still
+        // decode cleanly.
+        let json = """
+        {"id": 1, "task_id": "t_x", "status": "running", "started_at": 1778160000}
+        """
+        let run = try JSONDecoder().decode(HermesKanbanRun.self, from: Data(json.utf8))
+        #expect(run.diagnostics.isEmpty)
+        #expect(run.failureCount == nil)
+    }
+
+    @Test func taskDetailMergesEnvelopeAndTaskDiagnostics() throws {
+        // Hermes's wire shape may put diagnostics on the task envelope OR
+        // on the inner task. `allDiagnostics` dedupes by (kind, detected_at)
+        // so a server emitting both sides doesn't surface dupes.
+        let json = """
+        {
+          "task": {
+            "id": "t_y",
+            "title": "y",
+            "status": "blocked",
+            "diagnostics": [
+              {"kind": "heartbeat_stalled", "detected_at": "2026-05-09T12:00:00Z"}
+            ]
+          },
+          "comments": [],
+          "events": [],
+          "diagnostics": [
+            {"kind": "heartbeat_stalled", "detected_at": "2026-05-09T12:00:00Z"},
+            {"kind": "retry_cap_hit"}
+          ]
+        }
+        """
+        let detail = try JSONDecoder().decode(HermesKanbanTaskDetail.self, from: Data(json.utf8))
+        let merged = detail.allDiagnostics
+        #expect(merged.count == 2)
+        #expect(merged.contains(where: { $0.kind == "heartbeat_stalled" }))
+        #expect(merged.contains(where: { $0.kind == "retry_cap_hit" }))
+    }
+
+    @Test func taskDetailWithoutEnvelopeDiagnosticsDecodes() throws {
+        // Pre-v0.13 task detail — no envelope diagnostics. Must decode.
+        let json = """
+        {
+          "task": {"id": "t_z", "title": "z", "status": "ready"},
+          "comments": [],
+          "events": []
+        }
+        """
+        let detail = try JSONDecoder().decode(HermesKanbanTaskDetail.self, from: Data(json.utf8))
+        #expect(detail.envelopeDiagnostics == nil)
+        #expect(detail.allDiagnostics.isEmpty)
+    }
+
+    @Test func diagnosticDecodesUnixTimestamp() throws {
+        let json = """
+        {"kind": "spawn_failure", "detected_at": 1778160614}
+        """
+        let diag = try JSONDecoder().decode(HermesKanbanDiagnostic.self, from: Data(json.utf8))
+        #expect(diag.kind == "spawn_failure")
+        // Decoder normalizes Unix int → ISO-8601 string.
+        #expect(diag.detectedAt?.contains("2026") == true)
+    }
 }

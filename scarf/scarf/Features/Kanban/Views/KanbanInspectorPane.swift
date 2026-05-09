@@ -8,6 +8,16 @@ import ScarfDesign
 struct KanbanInspectorPane: View {
     @State private var viewModel: KanbanTaskDetailViewModel
     let availableAssignees: [HermesKanbanAssignee]
+    /// True when the connected Hermes is on v0.13+ — gates the
+    /// hallucination banner, max_retries chip, diagnostics block,
+    /// and auto-blocked reason banner. Pre-v0.13 hosts see the v2.7.5
+    /// inspector unchanged.
+    let supportsKanbanDiagnostics: Bool
+    /// Resolves an effective hallucination gate — the board VM owns the
+    /// optimistic-override merge so the banner disappears immediately on
+    /// Verify before the polled state confirms the new gate. Falls back
+    /// to the wire-level value when no override is in flight.
+    let effectiveHallucinationGate: (HermesKanbanTask) -> KanbanHallucinationGate?
     let onClose: () -> Void
     let onClaim: () -> Void
     let onComplete: () -> Void
@@ -15,6 +25,8 @@ struct KanbanInspectorPane: View {
     let onUnblock: () -> Void
     let onArchive: () -> Void
     let onReassign: (String?) -> Void
+    let onVerifyHallucination: () -> Void
+    let onRejectHallucination: () -> Void
 
     @State private var selectedTab: DetailTab = .comments
 
@@ -30,16 +42,22 @@ struct KanbanInspectorPane: View {
         service: KanbanService,
         taskId: String,
         availableAssignees: [HermesKanbanAssignee] = [],
+        supportsKanbanDiagnostics: Bool = false,
+        effectiveHallucinationGate: @escaping (HermesKanbanTask) -> KanbanHallucinationGate? = { _ in nil },
         onClose: @escaping () -> Void,
         onClaim: @escaping () -> Void,
         onComplete: @escaping () -> Void,
         onBlock: @escaping () -> Void,
         onUnblock: @escaping () -> Void,
         onArchive: @escaping () -> Void,
-        onReassign: @escaping (String?) -> Void = { _ in }
+        onReassign: @escaping (String?) -> Void = { _ in },
+        onVerifyHallucination: @escaping () -> Void = {},
+        onRejectHallucination: @escaping () -> Void = {}
     ) {
         _viewModel = State(initialValue: KanbanTaskDetailViewModel(service: service, taskId: taskId))
         self.availableAssignees = availableAssignees
+        self.supportsKanbanDiagnostics = supportsKanbanDiagnostics
+        self.effectiveHallucinationGate = effectiveHallucinationGate
         self.onClose = onClose
         self.onClaim = onClaim
         self.onComplete = onComplete
@@ -47,6 +65,8 @@ struct KanbanInspectorPane: View {
         self.onUnblock = onUnblock
         self.onArchive = onArchive
         self.onReassign = onReassign
+        self.onVerifyHallucination = onVerifyHallucination
+        self.onRejectHallucination = onRejectHallucination
     }
 
     var body: some View {
@@ -159,6 +179,16 @@ struct KanbanInspectorPane: View {
                                 ScarfBadge(workspace, kind: .neutral)
                                     .fixedSize()
                             }
+                            // v0.13: max_retries chip. Read-only — Hermes
+                            // has no `update --max-retries` verb. The
+                            // `if let` guards pre-v0.13 hosts (always nil)
+                            // and the explicit capability gate adds
+                            // belt-and-suspenders.
+                            if supportsKanbanDiagnostics, let maxRetries = task.maxRetries {
+                                ScarfBadge("retries: \(maxRetries)", kind: .neutral)
+                                    .fixedSize()
+                                    .help("Max retries set at create time. Hermes has no update verb — re-create the task to change this.")
+                            }
                             if let tenant = task.tenant, !tenant.isEmpty {
                                 ScarfBadge(tenant, kind: .brand)
                                     .fixedSize()
@@ -251,13 +281,18 @@ struct KanbanInspectorPane: View {
     // MARK: - Body
 
     /// Inline health banner shown above the task body when something
-    /// requires user attention. Two conditions trigger today:
-    /// 1. Task is in `ready`/`todo` with no assignee — explains that
-    ///    the dispatcher silently skips unassigned tasks.
-    /// 2. The most recent run ended in a non-success outcome
-    ///    (`stale_lock`/`crashed`/`gave_up`/`timed_out`/`spawn_failed`/
-    ///    `reclaimed`/`failed`) — surfaces the error so the user
-    ///    doesn't have to dig into the Runs tab to discover it.
+    /// requires user attention. Stack vertically (multiple can apply at
+    /// once on a v0.13 task — e.g. unassigned + hallucination pending +
+    /// last-run-blocked).
+    /// Order top-to-bottom:
+    /// 1. **Hallucination gate (v0.13+)** — pending worker-created card.
+    ///    User must verify or reject before any other action makes sense.
+    /// 2. **Auto-blocked reason (v0.13+)** — server-supplied reason
+    ///    overrides the generic "Last run: blocked" banner.
+    /// 3. Task is in `ready`/`todo` with no assignee — explains that the
+    ///    dispatcher silently skips unassigned tasks.
+    /// 4. The most recent run ended in a non-success outcome — surfaces
+    ///    the error so the user doesn't have to dig into the Runs tab.
     @ViewBuilder
     private func healthBanner(for task: HermesKanbanTask) -> some View {
         let status = KanbanStatus.from(task.status)
@@ -292,23 +327,135 @@ struct KanbanInspectorPane: View {
         // Also suppress for `done` (terminal success).
         let suppressFailureBanner = (status == .running) || (status == .done)
 
-        if needsAssignee {
-            bannerRow(
-                icon: "exclamationmark.triangle.fill",
-                tint: ScarfColor.warning,
-                title: "Won't run automatically",
-                message: "Unassigned tasks are silently skipped by Hermes's dispatcher. Add an assignee to get this scheduled."
-            )
-        } else if hadFailedEndedRun, let lastEndedRun, !suppressFailureBanner {
-            let label = (lastEndedRun.outcome ?? lastEndedRun.status).lowercased()
-            let detail = lastEndedRun.error ?? lastEndedRun.summary ?? "no details"
-            bannerRow(
-                icon: "exclamationmark.octagon.fill",
-                tint: ScarfColor.danger,
-                title: "Last run: \(label)",
-                message: detail
-            )
+        // v0.13: hallucination-gate state. Read through the VM's
+        // optimistic-aware accessor so a Verify click takes effect
+        // before the polled state confirms. Belt-and-suspenders gate
+        // on capability flag.
+        let hallucination: KanbanHallucinationGate? = supportsKanbanDiagnostics
+            ? effectiveHallucinationGate(task)
+            : nil
+        // v0.13: structured auto-blocked reason. Renders the server's
+        // string verbatim; takes precedence over the generic "Last run:
+        // blocked" banner.
+        let autoBlockedReason: String? = (supportsKanbanDiagnostics
+                                          && status == .blocked
+                                          && (task.autoBlockedReason?.isEmpty == false))
+            ? task.autoBlockedReason
+            : nil
+        // Suppress the generic last-run banner when the more specific
+        // server-side reason supersedes it.
+        let suppressGenericFailure = autoBlockedReason != nil
+
+        VStack(alignment: .leading, spacing: ScarfSpace.s2) {
+            if hallucination == .pending {
+                hallucinationBanner
+            }
+            if let reason = autoBlockedReason {
+                bannerRow(
+                    icon: "exclamationmark.octagon.fill",
+                    tint: ScarfColor.danger,
+                    title: "Auto-blocked",
+                    // Verbatim — Hermes-side message is the source of truth.
+                    message: reason
+                )
+            }
+            if needsAssignee {
+                bannerRow(
+                    icon: "exclamationmark.triangle.fill",
+                    tint: ScarfColor.warning,
+                    title: "Won't run automatically",
+                    message: "Unassigned tasks are silently skipped by Hermes's dispatcher. Add an assignee to get this scheduled."
+                )
+            }
+            if hadFailedEndedRun, let lastEndedRun,
+               !suppressFailureBanner, !suppressGenericFailure {
+                let label = (lastEndedRun.outcome ?? lastEndedRun.status).lowercased()
+                let detail = lastEndedRun.error ?? lastEndedRun.summary ?? "no details"
+                bannerRow(
+                    icon: "exclamationmark.octagon.fill",
+                    tint: ScarfColor.danger,
+                    title: "Last run: \(label)",
+                    message: detail
+                )
+            }
+            // v0.13: cross-run diagnostics on the task header.
+            if supportsKanbanDiagnostics, !task.diagnostics.isEmpty {
+                diagnosticsBlock(task.diagnostics)
+            }
         }
+    }
+
+    /// v0.13 hallucination-gate banner — Verify / Reject affordances for
+    /// worker-created cards waiting on user verification.
+    private var hallucinationBanner: some View {
+        HStack(alignment: .top, spacing: ScarfSpace.s2) {
+            Image(systemName: "questionmark.diamond.fill")
+                .foregroundStyle(ScarfColor.warning)
+                .font(.system(size: 13, weight: .semibold))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Created by a worker — verify before running")
+                    .scarfStyle(.captionStrong)
+                    .foregroundStyle(ScarfColor.foregroundPrimary)
+                Text("A worker claimed it created this card; Hermes hasn't confirmed the underlying work exists. Verify the card matches a real follow-up, or reject if it's a hallucinated reference.")
+                    .scarfStyle(.caption)
+                    .foregroundStyle(ScarfColor.foregroundMuted)
+                HStack(spacing: ScarfSpace.s2) {
+                    Button("Verify", action: onVerifyHallucination)
+                        .buttonStyle(ScarfPrimaryButton())
+                    Button("Reject", action: onRejectHallucination)
+                        .buttonStyle(ScarfDestructiveButton())
+                }
+                .padding(.top, 2)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(ScarfSpace.s2)
+        .background(
+            RoundedRectangle(cornerRadius: ScarfRadius.md, style: .continuous)
+                .fill(ScarfColor.warning.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: ScarfRadius.md, style: .continuous)
+                .strokeBorder(ScarfColor.warning.opacity(0.4), lineWidth: 1)
+        )
+    }
+
+    /// v0.13 diagnostics block — renders a list of distress signals.
+    /// Used both at the task-header level (cross-run signals) and per
+    /// run on the Runs tab (in-flight signals). Wraps in a horizontal
+    /// scroll so a long diag list doesn't blow out inspector width.
+    private func diagnosticsBlock(_ diags: [HermesKanbanDiagnostic]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Diagnostics")
+                .scarfStyle(.captionUppercase)
+                .foregroundStyle(ScarfColor.foregroundFaint)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(diags) { diag in
+                        diagnosticBadge(diag)
+                    }
+                }
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    @ViewBuilder
+    private func diagnosticBadge(_ diag: HermesKanbanDiagnostic) -> some View {
+        let kind = KanbanDiagnosticKind.from(diag.kind)
+        let badgeKind: ScarfBadgeKind = {
+            switch kind.severity {
+            case .danger:  return .danger
+            case .warning: return .warning
+            case .neutral: return .neutral
+            }
+        }()
+        // Render the raw kind string — view code stays in sync with
+        // whatever future kinds Hermes ships. The typed mirror picks
+        // the badge tint and tooltip glyph; the verbatim wire string
+        // is the user-facing label.
+        ScarfBadge(diag.kind, kind: badgeKind)
+            .help(diag.message ?? diag.kind)
     }
 
     private func bannerRow(
@@ -562,6 +709,9 @@ struct KanbanInspectorPane: View {
     private func runRow(_ run: HermesKanbanRun) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: ScarfSpace.s2) {
+                // Render the wire-side outcome / status string verbatim so
+                // v0.13's richer outcome strings ("zombied — reclaimed by
+                // reaper", etc.) surface unchanged.
                 ScarfBadge(run.outcome ?? run.status, kind: outcomeKind(run.outcome ?? run.status))
                 if let profile = run.profile {
                     Text(profile)
@@ -584,6 +734,12 @@ struct KanbanInspectorPane: View {
                     .scarfStyle(.caption)
                     .foregroundStyle(ScarfColor.danger)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            // v0.13: per-run diagnostics. Gated on capability so a future
+            // server-side change can't accidentally surface partial UX
+            // on a pre-v0.13 host.
+            if supportsKanbanDiagnostics, !run.diagnostics.isEmpty {
+                diagnosticsBlock(run.diagnostics)
             }
         }
         .padding(ScarfSpace.s2)
@@ -619,23 +775,32 @@ struct KanbanInspectorPane: View {
     @ViewBuilder
     private var primaryAction: some View {
         if let task = viewModel.detail?.task {
-            switch KanbanStatus.from(task.status) {
-            case .ready, .todo:
-                Button("Start", action: onClaim)
-                    .buttonStyle(ScarfPrimaryButton())
-                    .help("Atomically claim this task and start the worker. Moves it to Running.")
-            case .running:
-                Button("Complete", action: onComplete)
-                    .buttonStyle(ScarfPrimaryButton())
-                    .help("Mark this task as Done. You'll be prompted for an optional result summary.")
-            case .blocked:
-                Button("Unblock", action: onUnblock)
-                    .buttonStyle(ScarfPrimaryButton())
-                    .help("Return this task to the Up Next queue so the dispatcher can pick it up again.")
-            case .triage:
+            // v0.13: when the hallucination gate is pending, suppress the
+            // primary action — the banner provides Verify / Reject as the
+            // gate. Showing "Start" alongside the banner would let the
+            // user dispatch a card Hermes hasn't confirmed exists.
+            if supportsKanbanDiagnostics,
+               effectiveHallucinationGate(task) == .pending {
                 EmptyView()
-            default:
-                EmptyView()
+            } else {
+                switch KanbanStatus.from(task.status) {
+                case .ready, .todo:
+                    Button("Start", action: onClaim)
+                        .buttonStyle(ScarfPrimaryButton())
+                        .help("Atomically claim this task and start the worker. Moves it to Running.")
+                case .running:
+                    Button("Complete", action: onComplete)
+                        .buttonStyle(ScarfPrimaryButton())
+                        .help("Mark this task as Done. You'll be prompted for an optional result summary.")
+                case .blocked:
+                    Button("Unblock", action: onUnblock)
+                        .buttonStyle(ScarfPrimaryButton())
+                        .help("Return this task to the Up Next queue so the dispatcher can pick it up again.")
+                case .triage:
+                    EmptyView()
+                default:
+                    EmptyView()
+                }
             }
         }
     }

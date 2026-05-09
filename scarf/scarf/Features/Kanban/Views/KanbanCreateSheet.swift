@@ -14,6 +14,12 @@ struct KanbanCreateSheet: View {
     /// Pre-filled project workspace path on per-project boards. When
     /// non-nil, the workspace picker is locked to "Project Dir".
     let projectWorkspacePath: String?
+    /// True when the connected Hermes is on v0.13+ — gates the
+    /// `--max-retries` field and decides whether to strip newlines from
+    /// the title at submit time. Pre-v0.13 hosts may truncate at the
+    /// first `\n`; we keep the multi-line input rendering on either way
+    /// since a taller `TextField` is harmless on v0.12.
+    let supportsKanbanDiagnostics: Bool
     /// Closure invoked when the user submits — VM owner constructs the
     /// `KanbanService.create` call.
     let onSubmit: (KanbanCreateRequest) async throws -> Void
@@ -33,6 +39,11 @@ struct KanbanCreateSheet: View {
     @State private var skillsInput: String = ""
     @State private var tenant: String = ""
     @State private var sendToTriage: Bool = false
+    /// v0.13: per-task retry budget. Toggle-gated so the user can opt
+    /// into "send the flag" vs. "let Hermes pick its default" (the
+    /// release notes default to 3 — see TODO in KanbanCreateRequest).
+    @State private var maxRetriesEnabled: Bool = false
+    @State private var maxRetries: Int = 3
     @State private var isSubmitting: Bool = false
     @State private var submitError: String?
     @FocusState private var titleFocused: Bool
@@ -62,6 +73,9 @@ struct KanbanCreateSheet: View {
                     assigneePicker
                     workspaceField
                     priorityField
+                    if supportsKanbanDiagnostics {
+                        maxRetriesField
+                    }
                     skillsField
                     if projectWorkspacePath == nil {
                         tenantField
@@ -114,10 +128,60 @@ struct KanbanCreateSheet: View {
     // MARK: - Fields
 
     private var titleField: some View {
+        // v0.13 server tolerates multi-line titles. We keep the
+        // multi-line input rendering on for ALL versions of Hermes —
+        // visually a taller TextField is harmless on v0.12 — and decide
+        // at submit time whether to strip newlines (see `makeRequest`).
         VStack(alignment: .leading, spacing: 4) {
             ScarfSectionHeader("Title")
-            ScarfTextField("What needs doing?", text: $title)
-                .focused($titleFocused)
+            TextField(
+                "What needs doing?",
+                text: $title,
+                axis: .vertical
+            )
+            .lineLimit(1...4)
+            .textFieldStyle(.plain)
+            .scarfStyle(.body)
+            .padding(.horizontal, ScarfSpace.s3)
+            .padding(.vertical, ScarfSpace.s2)
+            .background(
+                RoundedRectangle(cornerRadius: ScarfRadius.md, style: .continuous)
+                    .fill(ScarfColor.backgroundSecondary)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: ScarfRadius.md, style: .continuous)
+                    .strokeBorder(ScarfColor.borderStrong, lineWidth: 1)
+            )
+            .focused($titleFocused)
+        }
+    }
+
+    /// v0.13: per-task retry budget. Toggle gates whether `--max-retries`
+    /// is sent at all so the user can preserve "let Hermes pick the
+    /// default" semantics by leaving the toggle off.
+    private var maxRetriesField: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ScarfSectionHeader(
+                "Max retries",
+                subtitle: "0 = no retries. Defaults to 3."
+            )
+            HStack(spacing: ScarfSpace.s3) {
+                Toggle("Override default", isOn: $maxRetriesEnabled)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                Stepper(value: $maxRetries, in: 0...20) {
+                    Text("\(maxRetries)")
+                        .scarfStyle(.bodyEmph)
+                        .frame(minWidth: 24, alignment: .trailing)
+                        .foregroundStyle(
+                            maxRetriesEnabled
+                                ? ScarfColor.foregroundPrimary
+                                : ScarfColor.foregroundFaint
+                        )
+                }
+                .disabled(!maxRetriesEnabled)
+                Spacer()
+            }
         }
     }
 
@@ -307,7 +371,14 @@ struct KanbanCreateSheet: View {
     }
 
     private func makeRequest() -> KanbanCreateRequest {
-        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        var trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Pre-v0.13 hosts may truncate titles at the first `\n`. Strip
+        // newlines client-side when we know the connected Hermes hasn't
+        // shipped multi-line title support — replace with a space to
+        // keep the user's intent visible. v0.13+ keeps newlines verbatim.
+        if !supportsKanbanDiagnostics {
+            trimmedTitle = trimmedTitle.replacingOccurrences(of: "\n", with: " ")
+        }
         let trimmedBody = bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedAssignee = assignee.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedTenant = tenant.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -330,6 +401,14 @@ struct KanbanCreateSheet: View {
             }
         }
 
+        // Belt-and-suspenders: the `maxRetriesField` is only rendered
+        // when `supportsKanbanDiagnostics` is true, but gate again here
+        // so a programmatic state change can't smuggle the flag onto a
+        // pre-v0.13 host (where the verb would error).
+        let resolvedMaxRetries: Int? = (supportsKanbanDiagnostics && maxRetriesEnabled)
+            ? maxRetries
+            : nil
+
         return KanbanCreateRequest(
             title: trimmedTitle,
             body: trimmedBody.isEmpty ? nil : trimmedBody,
@@ -342,7 +421,8 @@ struct KanbanCreateSheet: View {
             idempotencyKey: nil,
             maxRuntimeSeconds: nil,
             createdBy: nil,
-            skills: parsedSkills
+            skills: parsedSkills,
+            maxRetries: resolvedMaxRetries
         )
     }
 }
