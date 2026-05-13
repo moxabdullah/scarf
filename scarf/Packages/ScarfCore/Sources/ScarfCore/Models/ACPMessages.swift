@@ -151,6 +151,27 @@ public enum ACPEvent: Sendable {
     case availableCommands(sessionId: String, commands: [[String: Any]])
     case connectionLost(reason: String)
     case unknown(sessionId: String, type: String)
+
+    /// Session id the event was emitted against, or `nil` for events
+    /// that don't carry one (`.connectionLost`). Used by
+    /// `RichChatViewModel.handleACPEvent` to drop straggling events
+    /// from a session the VM is no longer attached to.
+    public var sessionId: String? {
+        switch self {
+        case let .messageChunk(sid, _),
+             let .thoughtChunk(sid, _),
+             let .toolCallStart(sid, _),
+             let .toolCallUpdate(sid, _),
+             let .promptComplete(sid, _),
+             let .availableCommands(sid, _),
+             let .unknown(sid, _):
+            return sid
+        case let .permissionRequest(sid, _, _):
+            return sid
+        case .connectionLost:
+            return nil
+        }
+    }
 }
 
 public struct ACPToolCallEvent: Sendable {

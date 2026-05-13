@@ -115,6 +115,68 @@ import Foundation
         #expect(ACPChannelError.other("x").errorDescription == "x")
     }
 
+    // MARK: - processTerminated summary line
+    //
+    // Regression coverage for TestFlight feedback AGTvQ (2026-05-10):
+    // the error card surfaced "[INFO] acp_adapter.entry: Loaded env from
+    // /home/exedev/.hermes/.env" as if it were the failure reason —
+    // because the buffer was entirely INFO startup chatter and the old
+    // `firstNonEmptyLine` picked the first match. The fix skips
+    // INFO/DEBUG/NOTICE and prefers the LAST signal line.
+
+    @Test func summaryLineSkipsInfoAndDebugChatter() {
+        let tail = """
+        2026-05-10 23:54:32 [INFO] acp_adapter.entry: Loaded env from /home/exedev/.hermes/.env
+        2026-05-10 23:54:32 [INFO] acp_adapter.entry: Starting hermes-agent ACP adapter
+        2026-05-10 23:54:33 [ERROR] hermes_cli.acp: ModuleNotFoundError: No module named 'hermes_agent'
+        """
+        let summary = ACPClientError.summaryLine(fromStderrTail: tail)
+        #expect(summary?.contains("ModuleNotFoundError") == true)
+        #expect(summary?.contains("[INFO]") == false)
+    }
+
+    @Test func summaryLineReturnsNilWhenAllLinesAreInfo() {
+        // The exact scenario from AGTvQ: process dies right after
+        // startup logs, so the buffer holds nothing useful.
+        let tail = """
+        2026-05-10 23:54:32 [INFO] acp_adapter.entry: Loaded env from /home/exedev/.hermes/.env
+        2026-05-10 23:54:32 [INFO] acp_adapter.entry: Starting hermes-agent ACP adapter
+        """
+        let summary = ACPClientError.summaryLine(fromStderrTail: tail)
+        #expect(summary == nil)
+    }
+
+    @Test func summaryLinePicksLastUnprefixedLine() {
+        // Python traceback — last line is the exception type + message.
+        let tail = """
+        Traceback (most recent call last):
+          File "/opt/hermes/cli.py", line 42, in <module>
+            from hermes_agent import run
+        ImportError: cannot import name 'run' from 'hermes_agent'
+        """
+        let summary = ACPClientError.summaryLine(fromStderrTail: tail)
+        #expect(summary?.contains("ImportError") == true)
+    }
+
+    @Test func summaryLineHandlesEmptyBuffer() {
+        #expect(ACPClientError.summaryLine(fromStderrTail: "") == nil)
+        #expect(ACPClientError.summaryLine(fromStderrTail: "\n\n  \n") == nil)
+    }
+
+    @Test func processTerminatedDescriptionOmitsTailWhenOnlyInfoChatter() {
+        // End-to-end: the visible string in the error banner must NOT
+        // include the misleading INFO line.
+        let err = ACPClientError.processTerminated(
+            exitCode: nil,
+            stderrTail: "[INFO] acp_adapter.entry: Loaded env from /home/exedev/.hermes/.env"
+        )
+        let desc = err.errorDescription ?? ""
+        #expect(desc.contains("terminated unexpectedly"))
+        #expect(desc.contains("no exit code"))
+        #expect(!desc.contains("[INFO]"))
+        #expect(!desc.contains("Loaded env"))
+    }
+
     // MARK: - ACPClient state machine
 
     /// Build an ACPClient wired to the mock and kick off `start()`.
@@ -178,6 +240,76 @@ import Foundation
                 Issue.record("expected .rpcError, got \(error)")
             }
         }
+        await client.stop()
+    }
+
+    // MARK: - Read-side liveness (stall detection)
+    //
+    // Regression coverage for TestFlight feedback AObiv7 (2026-05-07):
+    // "streaming from chats stop, and I have to either force close or
+    // at least go back to the dashboard to get updates again." Cause:
+    // SSH socket over Tailscale silently stops carrying bytes; Citadel
+    // doesn't EOF the exec stream; iOS health monitor sees `isHealthy
+    // == true` and never routes to the reconnect path. Fix: expose
+    // `secondsSinceLastIncoming` so the iOS monitor can layer stall
+    // detection on top.
+
+    @Test @MainActor func lastIncomingIsInfinityBeforeStart() async {
+        let mock = MockACPChannel()
+        let client = ACPClient(context: .local) { _ in mock }
+        let idle = await client.secondsSinceLastIncoming
+        #expect(idle == .infinity)
+    }
+
+    @Test @MainActor func lastIncomingIsFreshImmediatelyAfterStart() async throws {
+        let (client, mock, startTask) = await buildClientWithMock()
+        try await waitFor { await mock.sent.count >= 1 }
+        let id = await mock.lastSentRequestId() ?? 1
+        await mock.reply(with: #"{"jsonrpc":"2.0","id":\#(id),"result":{}}"#)
+        try await startTask.value
+
+        // The initialize response itself counts as channel activity,
+        // so the idle clock should be sub-second right after start.
+        let idle = await client.secondsSinceLastIncoming
+        #expect(idle.isFinite)
+        #expect(idle < 2.0)
+
+        await client.stop()
+    }
+
+    @Test @MainActor func lastIncomingResetsOnAnyIncomingLine() async throws {
+        let (client, mock, startTask) = await buildClientWithMock()
+        try await waitFor { await mock.sent.count >= 1 }
+        let id = await mock.lastSentRequestId() ?? 1
+        await mock.reply(with: #"{"jsonrpc":"2.0","id":\#(id),"result":{}}"#)
+        try await startTask.value
+
+        // Brief pause so the idle clock has visibly advanced.
+        try await Task.sleep(nanoseconds: 60_000_000)   // 60ms
+
+        let before = await client.secondsSinceLastIncoming
+        // A session/update notification — pure incoming activity, no
+        // protocol-level meaning required to refresh the clock.
+        await mock.reply(with: #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"text":"hi"}}}}"#)
+        try await waitFor { await client.secondsSinceLastIncoming < before }
+        let after = await client.secondsSinceLastIncoming
+        #expect(after < before)
+
+        await client.stop()
+    }
+
+    @Test @MainActor func lastIncomingResetsOnStderr() async throws {
+        let (client, mock, startTask) = await buildClientWithMock()
+        try await waitFor { await mock.sent.count >= 1 }
+        let id = await mock.lastSentRequestId() ?? 1
+        await mock.reply(with: #"{"jsonrpc":"2.0","id":\#(id),"result":{}}"#)
+        try await startTask.value
+
+        try await Task.sleep(nanoseconds: 60_000_000)
+        let before = await client.secondsSinceLastIncoming
+        await mock.emitStderr("[INFO] heartbeat")
+        try await waitFor { await client.secondsSinceLastIncoming < before }
+
         await client.stop()
     }
 

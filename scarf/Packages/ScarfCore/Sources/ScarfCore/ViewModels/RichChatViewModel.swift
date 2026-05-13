@@ -147,6 +147,34 @@ public final class RichChatViewModel {
     public var messages: [HermesMessage] = []
     public var currentSession: HermesSession?
     public var messageGroups: [MessageGroup] = []
+    /// Trailing-window cap on how many `messageGroups` the chat list
+    /// renders at once. Sits on top of `HistoryPageSize.initial` (which
+    /// bounds DB I/O): even when `messageGroups` grows past this during
+    /// a long live session, only the trailing slice materializes in the
+    /// eager `VStack`. The "Load earlier" button bumps this in
+    /// `RenderWindow.step` chunks via `extendRenderWindow()` before
+    /// falling through to the DB-paging path.
+    public var renderWindow: Int = RenderWindow.initial
+    /// Trailing slice of `messageGroups`. Critical: this windows the
+    /// existing groups array — do NOT rebuild groups from a windowed
+    /// `messages` slice or `groupIndex` will renumber and break the
+    /// `MessageGroupView.==` equatable short-circuit.
+    public var visibleGroups: [MessageGroup] {
+        guard messageGroups.count > renderWindow else { return messageGroups }
+        return Array(messageGroups.suffix(renderWindow))
+    }
+    /// True when the in-memory `messageGroups` has more entries than
+    /// the current `renderWindow` exposes — chat list shows the
+    /// "Load earlier" button and tapping it grows the window before
+    /// falling through to a DB hop.
+    public var hasHiddenInMemoryGroups: Bool { messageGroups.count > renderWindow }
+    /// Reveal another `RenderWindow.step` groups from the existing
+    /// in-memory `messageGroups`. Pure derived-property change — no
+    /// group rebuild, no I/O. Group ids stay stable so `ForEach`
+    /// prepends old groups without recreating the visible tail.
+    public func extendRenderWindow(by delta: Int = RenderWindow.step) {
+        renderWindow = min(renderWindow + delta, messageGroups.count)
+    }
     /// True while the v2.8 two-phase loader's background hydration
     /// (tool_calls JSON + tool result rows) is in flight. Chat header
     /// shows "Loading tool details…" so the user knows the bare
@@ -673,6 +701,146 @@ public final class RichChatViewModel {
         projectScopedCommands.first { $0.name == name }
     }
 
+    // MARK: - Shared slash menu helpers
+
+    /// Pull `(name, argTail)` out of a `/<name> [args]` invocation.
+    /// Returns `(nil, "")` for non-slash input. Used by both the Mac and
+    /// iOS send paths to special-case `/goal`, `/queue`, `/steer` before
+    /// the wire send.
+    public static func parseSlashName(_ text: String) -> (name: String?, args: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("/") else { return (nil, "") }
+        let withoutSlash = trimmed.dropFirst()
+        if let space = withoutSlash.firstIndex(of: " ") {
+            return (
+                name: String(withoutSlash[..<space]),
+                args: String(withoutSlash[withoutSlash.index(after: space)...])
+            )
+        }
+        return (name: String(withoutSlash), args: "")
+    }
+
+    /// Cap goal text in transient toasts so a 1 KB user-typed goal
+    /// doesn't blow out the hint pill. The header pill applies its
+    /// own 33-char cap; the toast is shorter so the hint stays
+    /// glanceable.
+    public static func truncatedToastGoal(_ text: String) -> String {
+        text.count <= 60 ? text : String(text.prefix(57)) + "…"
+    }
+
+    /// Slash commands Scarf handles entirely on the client and that
+    /// MUST NOT be forwarded to the ACP server. Hermes's ACP adapter
+    /// does not intercept these — sending them as prompts routes them
+    /// to the LLM, which responds in-character ("/new is a TUI slash
+    /// command, type it in the TUI prompt"). Reported in TestFlight
+    /// feedback ADyrlh (2026-05-11).
+    public enum ClientSideSlashCommand: Sendable, Equatable {
+        /// `/new [<name>]` — start a fresh chat session on the
+        /// client. `name` is the trimmed argument tail; nil when the
+        /// user typed bare `/new`. Pre-v0.13 hosts ignore the name
+        /// even when Hermes does honor it.
+        case newSession(name: String?)
+    }
+
+    /// Classify input text against the client-side slash command set.
+    /// Returns nil for plain prompts, project-scoped commands,
+    /// non-interruptive (`/steer` / `/goal` / `/queue`), and
+    /// ACP-handled commands — all of which keep their existing wire
+    /// paths.
+    public static func clientSideSlashCommand(for text: String) -> ClientSideSlashCommand? {
+        let parsed = parseSlashName(text)
+        switch parsed.name {
+        case "new":
+            let trimmed = parsed.args.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .newSession(name: trimmed.isEmpty ? nil : trimmed)
+        default:
+            return nil
+        }
+    }
+
+    /// Slash menu visibility predicate: show only while the user is
+    /// typing the command token (text starts with `/` and contains no
+    /// whitespace). Once a space or newline appears the user is typing
+    /// arguments and the menu hides.
+    public static func shouldShowSlashMenu(text: String) -> Bool {
+        guard text.hasPrefix("/") else { return false }
+        return !text.contains(" ") && !text.contains("\n")
+    }
+
+    /// Strip the leading `/` so the slash menu can prefix-match the
+    /// remaining query against command names.
+    public static func slashMenuQuery(text: String) -> String {
+        guard text.hasPrefix("/") else { return "" }
+        return String(text.dropFirst())
+    }
+
+    /// Case-insensitive prefix match on command names. Empty query
+    /// returns the full list unchanged.
+    public static func filterSlashCommands(_ commands: [HermesSlashCommand], query: String) -> [HermesSlashCommand] {
+        let q = query.lowercased()
+        if q.isEmpty { return commands }
+        return commands.filter { $0.name.lowercased().hasPrefix(q) }
+    }
+
+    /// Names of slash-menu rows that should render greyed-out + ignore
+    /// taps. v2.8 / Hermes v0.13: `/steer` is greyed only when the
+    /// connected host is pre-v0.13 AND the session is idle. Pre-v0.13
+    /// hosts silently no-op `/steer` outside an active turn — surfacing
+    /// the row as "use during a turn" is friendlier than letting the
+    /// user click and see nothing happen. v0.13+ hosts allow steer-on-
+    /// idle so the row stays interactive.
+    public static func disabledSlashCommandNames(
+        isAgentWorking: Bool,
+        capabilities: HermesCapabilities
+    ) -> Set<String> {
+        if !isAgentWorking && !capabilities.hasACPSteerOnIdle {
+            return ["steer"]
+        }
+        return []
+    }
+
+    /// Tooltip / inline help text shown next to disabled rows. Returns
+    /// nil when no rows are disabled.
+    public static func disabledSlashCommandReason(
+        isAgentWorking: Bool,
+        capabilities: HermesCapabilities
+    ) -> String? {
+        let disabled = disabledSlashCommandNames(
+            isAgentWorking: isAgentWorking,
+            capabilities: capabilities
+        )
+        guard !disabled.isEmpty else { return nil }
+        return "Use `/steer` while the agent is working — your Hermes version doesn't support steering on idle sessions."
+    }
+
+    /// Expand `/<name> args` when `<name>` matches a loaded project-
+    /// scoped command. Falls through (returns the input unchanged) for
+    /// non-slash input, unknown names, ACP-advertised commands, and
+    /// quick_commands — those go to Hermes literally. The caller
+    /// provides the `ServerContext` so the expansion service can read
+    /// the project sidecar through the right transport.
+    public func expandIfProjectScoped(
+        _ text: String,
+        context: ServerContext
+    ) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("/") else { return text }
+        let withoutSlash = String(trimmed.dropFirst())
+        let name: String
+        let argument: String
+        if let space = withoutSlash.firstIndex(of: " ") {
+            name = String(withoutSlash[..<space])
+            argument = String(withoutSlash[withoutSlash.index(after: space)...])
+        } else {
+            name = withoutSlash
+            argument = ""
+        }
+        guard !name.isEmpty,
+              let cmd = projectScopedCommand(named: name)
+        else { return text }
+        return ProjectSlashCommandService(context: context).expand(cmd, withArgument: argument)
+    }
+
     public var supportsCompress: Bool { availableCommands.contains { $0.name == "compress" } }
 
     /// True when the menu carries more than just `/compress` — used to hide
@@ -748,6 +916,19 @@ public final class RichChatViewModel {
     private var resetTimestamp: Date?
     private var userSendPending = false
     private var activePollingTimer: Timer?
+    /// True once the user has sent at least one prompt in the
+    /// currently-attached session. Set by `addUserMessage`, cleared
+    /// by `setSessionId` / `reset`. Until set, content-creating ACP
+    /// events (`messageChunk`, `thoughtChunk`, `toolCallStart`,
+    /// `toolCallUpdate`, `promptComplete`) are dropped — Hermes' ACP
+    /// adapter sometimes streams the recent session state as a
+    /// sequence of agent events after `session/load`, OR auto-resumes
+    /// in-flight work for sessions with persistent goals / queued
+    /// prompts. Either way the user perceives bubbles materializing
+    /// one-by-one when they open an old chat. The DB-fetched history
+    /// is authoritative for the existing transcript; live agent work
+    /// resumes once the user actually engages by sending a prompt.
+    private var hasUserSentPromptThisSession = false
 
     public struct PendingPermission {
         public let requestId: Int
@@ -779,6 +960,7 @@ public final class RichChatViewModel {
         Task { await dataService.close() }
         messages = []
         messageGroups = []
+        renderWindow = RenderWindow.initial
         currentSession = nil
         lastKnownFingerprint = nil
         sessionId = nil
@@ -788,6 +970,7 @@ public final class RichChatViewModel {
         isLoadingEarlier = false
         isAgentWorking = false
         userSendPending = false
+        hasUserSentPromptThisSession = false
         resetTimestamp = Date()
         nextLocalId = -1
         streamingAssistantText = ""
@@ -836,6 +1019,10 @@ public final class RichChatViewModel {
     public func setSessionId(_ id: String?) {
         sessionId = id
         lastKnownFingerprint = nil
+        // Reset the user-engagement gate on every session change so
+        // the next chat we attach to also drops post-load replay
+        // events until the user prompts.
+        hasUserSentPromptThisSession = false
         // Refresh the wall-clock baseline whenever the session changes —
         // including the nil → real-id transition on first attach AND
         // the id → different-id transition on session swap. Resetting
@@ -870,6 +1057,11 @@ public final class RichChatViewModel {
         // failed attempt so we don't show "old error" + "still thinking…"
         // simultaneously. Matches the Mac ChatViewModel pattern.
         clearACPErrorState()
+        // Mark this session as user-engaged so subsequent ACP content
+        // events (chunks, tool calls, prompt completes) get processed
+        // and rendered. Until this fires, those events are dropped
+        // — see `handleACPEvent` for the rationale.
+        hasUserSentPromptThisSession = true
         let id = nextLocalId
         nextLocalId -= 1
         let message = HermesMessage(
@@ -915,6 +1107,47 @@ public final class RichChatViewModel {
 
     /// Process a streaming ACP event and update the message list.
     public func handleACPEvent(_ event: ACPEvent) {
+        // Cross-session guard: drop events that arrived for a session
+        // we're no longer attached to. The previous client's event task
+        // is cancelled fire-and-forget in `stop()` (cancellation is a
+        // signal, not a synchronous join), so a straggling buffered
+        // chunk can land after `vm.reset()` + `setSessionId(new)`. Once
+        // the user sends their first prompt the engagement gate opens
+        // and the stale chunk would otherwise render as a bubble in
+        // the new chat — surfaced in TestFlight feedback as "initial
+        // chat message shows from another chat" (AFI4q5, 2026-05-10).
+        // `.connectionLost` carries no session id and always passes
+        // (it's a transport-level signal, not session-scoped).
+        if let mine = sessionId,
+           let theirs = event.sessionId,
+           theirs != mine {
+            return
+        }
+        // Drop content-creating events until the user has sent a
+        // prompt in the currently-attached session. Hermes' ACP
+        // adapter sometimes emits a stream of agent events after
+        // `session/load` (replaying the recent transcript or
+        // auto-resuming work for sessions with persistent goals /
+        // queued prompts), which the user perceives as bubbles
+        // materializing one-by-one when they open an old chat. The
+        // DB-fetched history is authoritative for what's already
+        // there; once the user actually engages by sending a prompt,
+        // live agent activity flows through normally.
+        //
+        // Non-content events (`availableCommands`, `permissionRequest`,
+        // `connectionLost`) are always processed — they carry session
+        // chrome the user needs regardless of who initiated.
+        if !hasUserSentPromptThisSession {
+            switch event {
+            case .messageChunk, .thoughtChunk, .toolCallStart,
+                 .toolCallUpdate, .promptComplete:
+                ScarfMon.event(.chatStream, "mac.handleACPEvent.preEngagementDropped", count: 1)
+                return
+            case .permissionRequest, .connectionLost,
+                 .availableCommands, .unknown:
+                break
+            }
+        }
         switch event {
         case .messageChunk(_, let text):
             appendMessageChunk(text: text)
@@ -1230,7 +1463,14 @@ public final class RichChatViewModel {
     private static let streamingId = 0
 
     /// Insert or update the in-progress streaming assistant message (id=0).
+    ///
+    /// On update we preserve the first-seen timestamp; otherwise the
+    /// per-chunk re-stamp would let a finalize race surface as the
+    /// assistant landing ahead of its user prompt in the chronological
+    /// sort (the prompt-jump bug).
     private func upsertStreamingMessage() {
+        let existingIdx = messages.firstIndex(where: { $0.id == Self.streamingId })
+        let timestamp = existingIdx.map { messages[$0].timestamp } ?? Date()
         let msg = HermesMessage(
             id: Self.streamingId,
             sessionId: sessionId ?? "",
@@ -1239,13 +1479,13 @@ public final class RichChatViewModel {
             toolCallId: nil,
             toolCalls: streamingToolCalls,
             toolName: nil,
-            timestamp: Date(),
+            timestamp: timestamp,
             tokenCount: nil,
             finishReason: nil,
             reasoning: streamingThinkingText.isEmpty ? nil : streamingThinkingText
         )
 
-        if let idx = messages.firstIndex(where: { $0.id == Self.streamingId }) {
+        if let idx = existingIdx {
             messages[idx] = msg
         } else {
             messages.append(msg)
@@ -1334,6 +1574,11 @@ public final class RichChatViewModel {
             // `finalizeStreamingMessage` interval). The new message
             // is content-equal to the streaming one — there is no
             // animation worth running.
+            // Preserve the streaming message's original timestamp.
+            // Re-stamping with `Date()` here used to let a polling tick
+            // that landed mid-finalize push the assistant's chronology
+            // ahead of its actual position — the prompt-jump bug.
+            let preservedTimestamp = messages[idx].timestamp ?? Date()
             withTransaction(Transaction(animation: nil)) {
                 messages[idx] = HermesMessage(
                     id: id,
@@ -1343,7 +1588,7 @@ public final class RichChatViewModel {
                     toolCallId: nil,
                     toolCalls: streamingToolCalls,
                     toolName: nil,
-                    timestamp: Date(),
+                    timestamp: preservedTimestamp,
                     tokenCount: nil,
                     finishReason: streamingToolCalls.isEmpty ? "stop" : nil,
                     reasoning: streamingThinkingText.isEmpty ? nil : streamingThinkingText
@@ -1402,7 +1647,7 @@ public final class RichChatViewModel {
             let originMessages = await dataService.fetchMessages(sessionId: origin, limit: HistoryPageSize.reconcile)
             if !originMessages.isEmpty {
                 dbMessages = originMessages + dbMessages
-                dbMessages.sort { ($0.timestamp ?? .distantPast) < ($1.timestamp ?? .distantPast) }
+                dbMessages.sort(by: HermesMessage.chronologicalOrder)
             }
         }
 
@@ -1508,7 +1753,7 @@ public final class RichChatViewModel {
             }
             if !acpOutcome.messages.isEmpty {
                 allMessages.append(contentsOf: acpOutcome.messages)
-                allMessages.sort { ($0.timestamp ?? .distantPast) < ($1.timestamp ?? .distantPast) }
+                allMessages.sort(by: HermesMessage.chronologicalOrder)
                 moreHistory = moreHistory || acpOutcome.messages.count >= pageSize
             }
         }
@@ -1544,7 +1789,7 @@ public final class RichChatViewModel {
                 }
                 stillPending.append(local)
             }
-            merged.sort { ($0.timestamp ?? .distantPast) < ($1.timestamp ?? .distantPast) }
+            merged.sort(by: HermesMessage.chronologicalOrder)
             messages = merged
             if stillPending.isEmpty {
                 pendingLocalUserMessages.removeValue(forKey: sessionId)
@@ -1734,12 +1979,7 @@ public final class RichChatViewModel {
         // of all the persisted rows; the synthetic placeholder uses a
         // negative id so it slots in last — fine for inspector display
         // since the inspector keys on toolCallId.
-        messages.sort { lhs, rhs in
-            let lt = lhs.timestamp ?? .distantPast
-            let rt = rhs.timestamp ?? .distantPast
-            if lt != rt { return lt < rt }
-            return lhs.id < rhs.id
-        }
+        messages.sort(by: HermesMessage.chronologicalOrder)
         buildMessageGroups()
         ScarfMon.event(.sessionLoad, "mac.lazyToolResult.fetched", count: 1)
     }
@@ -1822,7 +2062,7 @@ public final class RichChatViewModel {
             let session = await dataService.fetchSession(id: sessionId)
             lastKnownFingerprint = fingerprint
 
-            messages = fetched
+            messages = Self.mergedAfterPoll(fetched: fetched, currentLocal: messages)
             currentSession = session
             buildMessageGroups()
 
@@ -1840,6 +2080,48 @@ public final class RichChatViewModel {
                 }
             }
         }
+    }
+
+    /// Merge a polling-tick DB snapshot with the current in-memory
+    /// state, preserving local-only rows (streaming chunk, optimistic
+    /// user msg, optimistic tool-result placeholder) whose semantic
+    /// twin hasn't yet appeared in `fetched`.
+    ///
+    /// Without this guard the bare `messages = fetched` swap at line
+    /// ~1724 would briefly drop the streaming bubble or a tool result
+    /// placeholder that Hermes hasn't committed to `state.db` yet —
+    /// visible as the prompt-jump symptom (issue tracked alongside
+    /// the v2.7-era ordering rework).
+    nonisolated static func mergedAfterPoll(
+        fetched: [HermesMessage],
+        currentLocal: [HermesMessage]
+    ) -> [HermesMessage] {
+        let dbUserContents = Set(fetched.filter(\.isUser).map(\.content))
+        let dbToolCallIds = Set(fetched.compactMap { $0.role == "tool" ? $0.toolCallId : nil })
+        var merged = fetched
+        for msg in currentLocal {
+            // Persisted DB rows always have positive ids; only locals
+            // (negative id) and the streaming chunk (id == 0) qualify
+            // for survival.
+            guard msg.id <= 0 else { continue }
+            if msg.id == 0 {
+                // Streaming assistant — DB never carries id == 0, so
+                // this is always purely local. Keep until finalize
+                // flips it to a negative permanent id.
+                merged.append(msg)
+                continue
+            }
+            if msg.isUser, !dbUserContents.contains(msg.content) {
+                merged.append(msg)
+                continue
+            }
+            if msg.role == "tool", let callId = msg.toolCallId, !dbToolCallIds.contains(callId) {
+                merged.append(msg)
+                continue
+            }
+        }
+        merged.sort(by: HermesMessage.chronologicalOrder)
+        return merged
     }
 
     private func startActivePolling() {

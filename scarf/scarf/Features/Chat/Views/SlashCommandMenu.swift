@@ -21,12 +21,11 @@ struct SlashCommandMenu: View {
     @Binding var selectedIndex: Int
     var onSelect: (HermesSlashCommand) -> Void
 
-    /// Case-insensitive prefix match on the command name. Exposed as a static
-    /// helper so the parent can share filter logic with its key handlers.
+    /// Case-insensitive prefix match on the command name. Thin forwarder
+    /// to the shared `RichChatViewModel.filterSlashCommands` so the Mac
+    /// and iOS chat surfaces apply identical filtering.
     static func filter(commands: [HermesSlashCommand], query: String) -> [HermesSlashCommand] {
-        let q = query.lowercased()
-        if q.isEmpty { return commands }
-        return commands.filter { $0.name.lowercased().hasPrefix(q) }
+        RichChatViewModel.filterSlashCommands(commands, query: query)
     }
 
     var body: some View {

@@ -31,6 +31,11 @@ struct ChatView: View {
     @State private var controller: ChatController
     @State private var showProjectPicker = false
     @State private var showSlashCommandsSheet = false
+    /// Drives the inline slash-command autocomplete above the composer.
+    /// Toggled by `RichChatViewModel.shouldShowSlashMenu(text:)` on draft
+    /// changes — true only while the user is typing the command token
+    /// (slash + no whitespace), hides once a space or newline appears.
+    @State private var showSlashMenu = false
     /// PhotosPicker selection. Bridge between SwiftUI's selection
     /// binding and our `ChatImageAttachment` payload — `loadTransferable`
     /// produces raw `Data` we then hand to `ImageEncoder`. v0.12+ only.
@@ -56,6 +61,33 @@ struct ChatView: View {
     /// no-op in v2.8.0 (no popover); previews live on the Mac app.
     private var supportsACPQueue: Bool {
         capabilitiesStore?.capabilities.hasACPQueue ?? false
+    }
+
+    /// Prefix-filtered slash command list driven by the current draft.
+    /// Pulls from the shared `RichChatViewModel.availableCommands` (same
+    /// merged + capability-gated list the Mac uses).
+    private var filteredSlashCommands: [HermesSlashCommand] {
+        let query = RichChatViewModel.slashMenuQuery(text: controller.draft)
+        return RichChatViewModel.filterSlashCommands(
+            controller.vm.availableCommands,
+            query: query
+        )
+    }
+
+    /// Names that render greyed-out + ignore taps. Matches the Mac's
+    /// disabled gating exactly — `/steer` on pre-v0.13 idle sessions.
+    private var disabledSlashCommandNames: Set<String> {
+        RichChatViewModel.disabledSlashCommandNames(
+            isAgentWorking: controller.vm.isAgentWorking,
+            capabilities: capabilitiesStore?.capabilities ?? .empty
+        )
+    }
+
+    private var disabledSlashCommandReason: String? {
+        RichChatViewModel.disabledSlashCommandReason(
+            isAgentWorking: controller.vm.isAgentWorking,
+            capabilities: capabilitiesStore?.capabilities ?? .empty
+        )
     }
     /// Drives the composer's keyboard. Bound to the TextField via
     /// `.focused(...)`; cleared by the scroll-to-dismiss gesture on
@@ -502,6 +534,27 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: ScarfSpace.s2) {
+            if showSlashMenu {
+                IOSSlashCommandMenu(
+                    commands: filteredSlashCommands,
+                    agentHasCommands: !controller.vm.availableCommands.isEmpty,
+                    disabledCommandNames: disabledSlashCommandNames,
+                    disabledReason: disabledSlashCommandReason,
+                    onSelect: { command in
+                        controller.insertSlashCommand(command)
+                        showSlashMenu = false
+                        composerFocused = true
+                    }
+                )
+                .background(.regularMaterial)
+                .overlay(
+                    RoundedRectangle(cornerRadius: ScarfRadius.lg)
+                        .strokeBorder(ScarfColor.border, lineWidth: 0.5)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: ScarfRadius.lg))
+                .shadow(color: .black.opacity(0.18), radius: 8, x: 0, y: 2)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
             if !controller.attachments.isEmpty || isEncodingAttachment || attachmentError != nil {
                 attachmentStrip
             }
@@ -511,6 +564,12 @@ struct ChatView: View {
         .padding(.top, ScarfSpace.s2)
         .padding(.bottom, ScarfSpace.s2)
         .background(.regularMaterial)
+        .onChange(of: controller.draft) { _, newValue in
+            let next = RichChatViewModel.shouldShowSlashMenu(text: newValue)
+            if next != showSlashMenu {
+                showSlashMenu = next
+            }
+        }
         #if canImport(PhotosUI)
         .photosPicker(
             isPresented: $showPhotoPicker,
@@ -1364,6 +1423,19 @@ final class ChatController {
         }
     }
 
+    /// Replace the current draft with `/<name>` (plus a trailing space
+    /// when the command takes an argument), mirroring the Mac
+    /// `RichChatInputBar.insertCommand`. Triggered by tapping a row in
+    /// the iOS slash autocomplete.
+    func insertSlashCommand(_ command: HermesSlashCommand) {
+        if command.argumentHint != nil {
+            draft = "/\(command.name) "
+        } else {
+            draft = "/\(command.name)"
+        }
+        scheduleDraftSave()
+    }
+
     /// Send the current draft as a prompt. Fire-and-forget — the
     /// assistant reply streams back as ACP notifications handled by
     /// the event task.
@@ -1379,6 +1451,31 @@ final class ChatController {
         // v0.12+ allows image-only sends — vision models accept "describe
         // this" with no text. Bail only when both fields are empty.
         guard !text.isEmpty || !attachments.isEmpty else { return }
+
+        // Client-side slash intercept. Hermes ACP doesn't intercept `/new`
+        // server-side — sending it as a prompt routes to the LLM, which
+        // responds in-character ("/new is a TUI slash command, type it in
+        // the TUI prompt"). TestFlight feedback ADyrlh, 2026-05-11. Catch
+        // these BEFORE the user-message bubble + ACP wire send so the
+        // transcript doesn't sprout an orphaned slash bubble right before
+        // we tear it down for the new session.
+        if !text.isEmpty,
+           let intercept = RichChatViewModel.clientSideSlashCommand(for: text) {
+            draft = ""
+            clearStoredDraft()
+            attachments = []
+            switch intercept {
+            case .newSession(let name):
+                // iOS fresh-chat path doesn't accept a session name yet
+                // (Hermes v0.13 `hasNewWithSessionName` lands later in
+                // the iOS catch-up). Drop the name silently and start
+                // a clean session.
+                _ = name
+                await resetAndStartNewSession()
+            }
+            return
+        }
+
         let sessionId = vm.sessionId ?? ""
         guard !sessionId.isEmpty else { return }
         let images = attachments
@@ -1404,7 +1501,7 @@ final class ChatController {
         // state aligned across platforms — otherwise an iOS user who
         // ran `/goal` then opened the same session on Mac would see
         // an empty pill until they typed `/goal` again.
-        let parsedSlash = Self.parseSlashName(text)
+        let parsedSlash = RichChatViewModel.parseSlashName(text)
         switch parsedSlash.name {
         case "goal":
             // TODO(WS-2-Q7): verify on a real v0.13 host.
@@ -1412,7 +1509,7 @@ final class ChatController {
             switch arg {
             case .set(let goalText):
                 vm.recordActiveGoal(text: goalText)
-                vm.transientHint = "Goal locked: \(Self.truncatedToastGoal(goalText))"
+                vm.transientHint = "Goal locked: \(RichChatViewModel.truncatedToastGoal(goalText))"
             case .clear:
                 vm.recordActiveGoal(text: nil)
                 vm.transientHint = "Goal cleared."
@@ -1456,29 +1553,6 @@ final class ChatController {
         }
     }
 
-    /// Pull `(name, argTail)` out of a `/<name> [args]` invocation.
-    /// Mirror of `ChatViewModel.parseSlashName` on Mac. Returns
-    /// `(nil, "")` for non-slash input.
-    static func parseSlashName(_ text: String) -> (name: String?, args: String) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("/") else { return (nil, "") }
-        let withoutSlash = trimmed.dropFirst()
-        if let space = withoutSlash.firstIndex(of: " ") {
-            return (
-                name: String(withoutSlash[..<space]),
-                args: String(withoutSlash[withoutSlash.index(after: space)...])
-            )
-        }
-        return (name: String(withoutSlash), args: "")
-    }
-
-    /// Cap goal text in transient toasts so a 1 KB user-typed goal
-    /// doesn't blow out the hint pill. Mirror of
-    /// `ChatViewModel.truncatedToastGoal`.
-    static func truncatedToastGoal(_ text: String) -> String {
-        text.count <= 60 ? text : String(text.prefix(57)) + "…"
-    }
-
     /// Auto-clear the chat composer's transient hint after 4s. Mirror
     /// of `ChatViewModel.scheduleHintClear` — uses a value snapshot
     /// rather than identity so a later toast that reuses the same
@@ -1493,26 +1567,8 @@ final class ChatController {
         }
     }
 
-    /// Mirror of `ChatViewModel.expandIfProjectScoped(_:)` on Mac.
-    /// `/<name> args` matching a loaded project-scoped command is
-    /// expanded; everything else is sent literally.
     private func expandIfProjectScoped(_ text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("/") else { return text }
-        let withoutSlash = String(trimmed.dropFirst())
-        let name: String
-        let argument: String
-        if let space = withoutSlash.firstIndex(of: " ") {
-            name = String(withoutSlash[..<space])
-            argument = String(withoutSlash[withoutSlash.index(after: space)...])
-        } else {
-            name = withoutSlash
-            argument = ""
-        }
-        guard !name.isEmpty,
-              let cmd = vm.projectScopedCommand(named: name)
-        else { return text }
-        return ProjectSlashCommandService(context: context).expand(cmd, withArgument: argument)
+        vm.expandIfProjectScoped(text, context: context)
     }
 
     /// Stop the current session + tear down the SSH exec channel.
@@ -1560,11 +1616,32 @@ final class ChatController {
         }
     }
 
+    /// Threshold for read-side stall detection. When the agent is
+    /// actively working (streaming a turn, running a tool) but no byte
+    /// has arrived from the channel for this long, we declare the
+    /// channel dead and route into the reconnect path. Set conservatively
+    /// — Hermes streams thoughts/tools every <1s during normal work, but
+    /// a long-running tool call (a slow bash command, a remote fetch)
+    /// can legitimately hold a turn silent for tens of seconds. Tuned to
+    /// avoid false positives on routine work while still catching the
+    /// "Tailscale/iOS silently severed the TCP socket" symptom (TestFlight
+    /// feedback AObiv7, 2026-05-07) within a window the user will tolerate.
+    private static let stallDetectionSeconds: TimeInterval = 75
+
     /// 5-second heartbeat that catches dead channels which don't
     /// explicitly EOF the stream (e.g., a hung SSH socket waiting
     /// for the next chunk that never arrives). When `isHealthy`
     /// returns false, route into the reconnect path. Mirrors Mac's
     /// `startHealthMonitor`.
+    ///
+    /// Also detects a silent stall: when the VM thinks the agent is
+    /// working but no byte has arrived from the channel for
+    /// `stallDetectionSeconds`, treat the channel as dead. iOS over
+    /// Tailscale is the symptom — the SSH socket can sit idle for
+    /// minutes before the OS notices, and the user perceives this as
+    /// "streaming just stopped." We don't apply the stall threshold
+    /// when the agent is idle (no prompt in flight) because there's
+    /// genuinely nothing for the channel to send.
     private func startHealthMonitor(client: ACPClient) {
         healthMonitorTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -1574,6 +1651,17 @@ final class ChatController {
                 if !healthy {
                     self?.handleConnectionDied()
                     break
+                }
+                guard let self else { break }
+                if self.vm.isAgentWorking {
+                    let idle = await client.secondsSinceLastIncoming
+                    if idle > Self.stallDetectionSeconds {
+                        Self.logger.warning(
+                            "ACP channel appears stalled — \(Int(idle))s since last byte while agent is working; routing to reconnect"
+                        )
+                        self.handleConnectionDied()
+                        break
+                    }
                 }
             }
         }

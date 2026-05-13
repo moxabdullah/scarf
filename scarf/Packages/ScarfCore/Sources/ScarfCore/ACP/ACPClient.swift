@@ -65,7 +65,26 @@ public actor ACPClient {
         stderrBuffer.joined(separator: "\n")
     }
 
+    /// Wall-clock timestamp of the last byte read from the ACP channel
+    /// (stdout JSON-RPC OR stderr). Used by callers (iOS health monitor)
+    /// to detect a silently-stalled channel — Citadel's `withExec`
+    /// stream doesn't EOF when the underlying TCP socket stops
+    /// transferring (e.g., a Tailscale link with no keepalive on the
+    /// device side), so we expose a read-side liveness signal here for
+    /// the monitor to gate against. Updated on every incoming line.
+    /// Nil until `start()` initializes the channel.
+    private var lastIncomingAt: Date?
+
+    /// Seconds since the last byte arrived from the channel. Returns
+    /// `.infinity` when no activity has been observed yet. Read-side
+    /// liveness signal for stall detection — see `lastIncomingAt`.
+    public var secondsSinceLastIncoming: TimeInterval {
+        guard let last = lastIncomingAt else { return .infinity }
+        return Date().timeIntervalSince(last)
+    }
+
     fileprivate func appendStderr(_ text: String) {
+        lastIncomingAt = Date()
         for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
             stderrBuffer.append(String(line))
         }
@@ -74,8 +93,14 @@ public actor ACPClient {
         }
     }
 
+    fileprivate func touchLastIncoming() {
+        lastIncomingAt = Date()
+    }
+
     /// True while the underlying channel is alive. Equivalent to the
-    /// old `process.isRunning` check.
+    /// old `process.isRunning` check. Read-side stall detection is
+    /// orthogonal (see `secondsSinceLastIncoming`) so callers that care
+    /// can layer their own threshold on top.
     public var isHealthy: Bool {
         isConnected && channel != nil
     }
@@ -116,6 +141,9 @@ public actor ACPClient {
 
         self.channel = ch
         self.isConnected = true
+        // Prime the read-side liveness clock so a freshly-opened channel
+        // doesn't read as instantly stalled before the first event.
+        self.lastIncomingAt = Date()
 
         // Start reading incoming JSON-RPC BEFORE sending initialize so
         // we catch the response.
@@ -438,6 +466,7 @@ public actor ACPClient {
         readTask = Task { [weak self] in
             do {
                 for try await line in ch.incoming {
+                    await self?.touchLastIncoming()
                     guard let data = line.data(using: .utf8) else { continue }
                     do {
                         let message = try JSONDecoder().decode(ACPRawMessage.self, from: data)
@@ -580,21 +609,47 @@ public enum ACPClientError: Error, LocalizedError {
         case .rpcError(let code, let msg): return "ACP error \(code): \(msg)"
         case .processTerminated(let exit, let tail):
             let exitPart = exit.map { "exit \($0)" } ?? "no exit code"
-            let tailPart = Self.firstNonEmptyLine(in: tail).map { " — \($0)" } ?? ""
+            let tailPart = Self.summaryLine(fromStderrTail: tail).map { " — \($0)" } ?? ""
             return "ACP process terminated unexpectedly (\(exitPart))\(tailPart)"
         case .requestTimeout(let method): return "ACP request '\(method)' timed out"
         }
     }
 
-    /// Pluck the first non-empty stderr line for the user-facing
-    /// summary. Full tail still rides through on `acpErrorDetails`,
-    /// but the description itself stays single-line.
-    private static func firstNonEmptyLine(in s: String) -> String? {
-        for raw in s.split(separator: "\n") {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            if !line.isEmpty { return line }
+    /// Pick the most signal-rich line from a stderr tail for the
+    /// user-facing error summary.
+    ///
+    /// Hermes ACP adapter emits `[INFO]` / `[DEBUG]` startup logs
+    /// ("Loaded env", "Starting hermes-agent ACP adapter") BEFORE the
+    /// real work begins. If the process dies right after, the full
+    /// stderr ring buffer can be entirely benign INFO chatter — picking
+    /// the *first* line surfaces a misleading "Loaded env from …" tail
+    /// next to "process terminated unexpectedly" (TestFlight feedback
+    /// AGTvQ, 2026-05-10).
+    ///
+    /// Strategy:
+    ///   1. Skip blank lines, `[INFO]`, `[DEBUG]`, `[NOTICE]`.
+    ///   2. From the remainder, pick the *last* line — it's closest in
+    ///      time to the actual termination (Python tracebacks put the
+    ///      most useful exception on the last line; ssh failures emit
+    ///      a single terminal line).
+    ///   3. If nothing remains, return `nil` so the description doesn't
+    ///      append a noisy/misleading suffix at all.
+    ///
+    /// `internal` so the test suite can pin the behavior without
+    /// reaching through `errorDescription` string contains-checks.
+    static func summaryLine(fromStderrTail s: String) -> String? {
+        let lines = s.split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard !lines.isEmpty else { return nil }
+
+        let signal = lines.filter { line in
+            let lower = line.lowercased()
+            return !lower.contains("[info]")
+                && !lower.contains("[debug]")
+                && !lower.contains("[notice]")
         }
-        return nil
+        return signal.last
     }
 }
 

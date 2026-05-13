@@ -367,33 +367,6 @@ final class ChatViewModel {
         }
     }
 
-    /// Pull the slash command name + raw argument tail out of the
-    /// composer text. Returns `(name: nil, args: "")` for non-slash
-    /// input. Mirrors the parser shape `RichChatViewModel.parseGoalArgument`
-    /// expects; kept on `ChatViewModel` (not promoted to ScarfCore)
-    /// because the Mac and iOS chat surfaces compose this with their
-    /// own per-platform send paths.
-    static func parseSlashName(_ text: String) -> (name: String?, args: String) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("/") else { return (nil, "") }
-        let withoutSlash = trimmed.dropFirst()
-        if let space = withoutSlash.firstIndex(of: " ") {
-            return (
-                name: String(withoutSlash[..<space]),
-                args: String(withoutSlash[withoutSlash.index(after: space)...])
-            )
-        }
-        return (name: String(withoutSlash), args: "")
-    }
-
-    /// Cap goal text in transient toasts so a 1 KB user-typed goal
-    /// doesn't blow out the hint pill. The header pill applies its
-    /// own 33-char cap; the toast is shorter so the hint stays
-    /// glanceable.
-    static func truncatedToastGoal(_ text: String) -> String {
-        text.count <= 60 ? text : String(text.prefix(57)) + "…"
-    }
-
     @MainActor
     private func recordACPFailure(_ error: Error, client: ACPClient?, context: String) async {
         logger.error("\(context): \(error.localizedDescription)")
@@ -599,35 +572,30 @@ final class ChatViewModel {
         }
     }
 
-    /// If `text` is a `/<name> [args]` invocation matching a project-
-    /// scoped slash command currently loaded into the view model, return
-    /// the expanded prompt body (with `{{argument}}` substituted). Otherwise
-    /// return the input unchanged.
-    ///
-    /// ACP commands and `quick_commands:` keep going to Hermes literally —
-    /// only project-scoped commands get the client-side expansion treatment
-    /// because Hermes has no concept of them.
-    private func expandIfProjectScoped(_ text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("/") else { return text }
-        let withoutSlash = String(trimmed.dropFirst())
-        let name: String
-        let argument: String
-        if let space = withoutSlash.firstIndex(of: " ") {
-            name = String(withoutSlash[..<space])
-            argument = String(withoutSlash[withoutSlash.index(after: space)...])
-        } else {
-            name = withoutSlash
-            argument = ""
-        }
-        guard !name.isEmpty,
-              let cmd = richChatViewModel.projectScopedCommand(named: name)
-        else { return text }
-        return ProjectSlashCommandService(context: context).expand(cmd, withArgument: argument)
-    }
-
     private func sendViaACP(client: ACPClient, text: String, images: [ChatImageAttachment] = []) {
         ScarfMon.event(.chatStream, "mac.sendViaACP", count: 1, bytes: text.utf8.count)
+
+        // Client-side slash intercept. Hermes ACP doesn't intercept
+        // `/new` server-side — sending it as a prompt routes to the
+        // LLM, which responds in-character ("/new is a TUI slash
+        // command, type it in the TUI prompt"). TestFlight feedback
+        // ADyrlh, 2026-05-11. Run BEFORE the user-message append so
+        // the transcript doesn't sprout an orphaned slash bubble right
+        // before we tear it down for the new session.
+        if let intercept = RichChatViewModel.clientSideSlashCommand(for: text) {
+            switch intercept {
+            case .newSession(let name):
+                // Mac startNewSession doesn't yet honor v0.13's optional
+                // session-name argument (`hasNewWithSessionName`). Drop
+                // it silently for v1 — the slash menu's argument hint
+                // still discoverably advertises the syntax for when
+                // Mac's startNewSession gains support.
+                _ = name
+                startNewSession()
+            }
+            return
+        }
+
         guard let sessionId = richChatViewModel.sessionId else {
             clearACPErrorState()
             acpError = "No session ID — cannot send"
@@ -646,7 +614,7 @@ final class ChatViewModel {
         // prompt template. The literal slash is meaningless to Hermes
         // for project-scoped commands; this is what makes them portable
         // and Hermes-version-independent. v2.5.
-        let wireText = expandIfProjectScoped(text)
+        let wireText = richChatViewModel.expandIfProjectScoped(text, context: context)
 
         // Non-interruptive slash commands keep the "Agent working…"
         // indicator off and surface a transient toast confirming the
@@ -657,7 +625,7 @@ final class ChatViewModel {
         // so the chat header pill / queue chip update synchronously
         // without waiting for a server round-trip.
         let isNonInterruptive = richChatViewModel.isNonInterruptiveSlash(text)
-        let parsed = Self.parseSlashName(text)
+        let parsed = RichChatViewModel.parseSlashName(text)
         switch parsed.name {
         case "goal":
             // TODO(WS-2-Q7): once a v0.13 host confirms the
@@ -673,7 +641,7 @@ final class ChatViewModel {
             switch arg {
             case .set(let goalText):
                 richChatViewModel.recordActiveGoal(text: goalText)
-                richChatViewModel.transientHint = "Goal locked: \(Self.truncatedToastGoal(goalText))"
+                richChatViewModel.transientHint = "Goal locked: \(RichChatViewModel.truncatedToastGoal(goalText))"
                 maybeTriggerKanbanOnboarding()
             case .clear:
                 richChatViewModel.recordActiveGoal(text: nil)

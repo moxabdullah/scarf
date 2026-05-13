@@ -205,6 +205,65 @@ import Foundation
         #expect(vm.acpCompressionCount == 0)
     }
 
+    // MARK: - Cross-session event guard
+    //
+    // Regression coverage for TestFlight feedback AFI4q5 (2026-05-10):
+    // "Initial chat message shows from another chat." Cause: events for
+    // a prior session landed in the VM after `setSessionId` flipped to
+    // the new session but before the user engaged, then surfaced once
+    // the engagement gate opened. Guard added in
+    // `RichChatViewModel.handleACPEvent`.
+
+    @Test @MainActor func handleACPEventDropsContentForStaleSession() {
+        let vm = RichChatViewModel(context: .local)
+        vm.setSessionId("new")
+        // Open the engagement gate so the cross-session guard is the
+        // ONLY thing that could drop the event — otherwise we'd be
+        // testing the pre-engagement gate.
+        vm.addUserMessage(text: "hi")
+        let baseCount = vm.messages.count
+
+        // A chunk that belongs to a stale session must not produce
+        // a streaming assistant bubble in the active session.
+        vm.handleACPEvent(.messageChunk(sessionId: "old", text: "stale text"))
+        #expect(vm.messages.count == baseCount)
+        #expect(!vm.messages.contains { $0.content.contains("stale text") })
+
+        // Same-session chunk still flows through — produces a
+        // streaming assistant bubble.
+        vm.handleACPEvent(.messageChunk(sessionId: "new", text: "fresh "))
+        #expect(vm.messages.contains { $0.content == "fresh " && $0.isAssistant })
+    }
+
+    @Test @MainActor func handleACPEventAllowsConnectionLostFromAnyOrigin() {
+        let vm = RichChatViewModel(context: .local)
+        vm.setSessionId("new")
+        vm.addUserMessage(text: "hi")
+        let baseCount = vm.messages.count
+        // `.connectionLost` carries no session id and must always pass
+        // — it's a transport signal, not session-scoped. The VM
+        // appends a system message describing the failure.
+        vm.handleACPEvent(.connectionLost(reason: "socket gone"))
+        #expect(vm.messages.count > baseCount)
+        #expect(vm.messages.contains { $0.content.contains("socket gone") })
+    }
+
+    @Test @MainActor func handleACPEventAcceptsEventsBeforeSessionAttached() {
+        // Before `setSessionId` lands the VM's sessionId is nil. We
+        // intentionally let those events through — the engagement gate
+        // already prevents content-event spam at that point, and
+        // strict-equality dropping would block legitimate
+        // `availableCommands` arriving on `session/new`.
+        let vm = RichChatViewModel(context: .local)
+        let beforeAcp = vm.acpCommands.count
+        vm.handleACPEvent(
+            .availableCommands(sessionId: "incoming", commands: [
+                ["name": "clear", "description": "Clear chat"]
+            ])
+        )
+        #expect(vm.acpCommands.count == beforeAcp + 1)
+    }
+
     @Test @MainActor func messageGroupDerivedProperties() {
         let userMsg = HermesMessage(
             id: 1, sessionId: "s", role: "user", content: "hi",
