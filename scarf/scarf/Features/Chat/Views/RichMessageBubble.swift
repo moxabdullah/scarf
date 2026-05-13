@@ -158,14 +158,25 @@ struct RichMessageBubble: View, Equatable {
 
     @ViewBuilder
     private var contentView: some View {
-        let blocks = parseContentBlocks(message.content)
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                switch block {
-                case .text(let text):
-                    MarkdownContentView(content: text)
-                case .code(let code, let language):
-                    CodeBlockView(code: code, language: language)
+        // Skip the per-token code-fence walk while the streaming bubble
+        // is in flight (id == 0). At ~30–60 chunks/sec the parse was
+        // the dominant chat-render cost; render plain markdown until
+        // finalize and the body re-evaluates once with a permanent id.
+        // The Equatable short-circuit on RichMessageBubble (id != 0)
+        // then memoizes the parsed blocks for the lifetime of the
+        // bubble — no per-render cache needed.
+        if message.id == 0 {
+            MarkdownContentView(content: message.content)
+        } else {
+            let blocks = parseContentBlocks(message.content)
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                    switch block {
+                    case .text(let text):
+                        MarkdownContentView(content: text)
+                    case .code(let code, let language):
+                        CodeBlockView(code: code, language: language)
+                    }
                 }
             }
         }

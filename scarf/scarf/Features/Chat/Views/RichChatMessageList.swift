@@ -22,6 +22,13 @@ struct RichChatMessageList: View {
     var hasMoreHistory: Bool = false
     var isLoadingEarlier: Bool = false
     var onLoadEarlier: (() -> Void)? = nil
+    /// True while the v2.8 two-phase loader's background hydration
+    /// is filling in `toolCalls` JSON + tool-result rows. Forwarded
+    /// to `MessageGroupView` so it can skip render-side bubble
+    /// coalescing while messages are mid-hydration — otherwise pairs
+    /// that were merged pre-hydration un-merge as each one's tools
+    /// land, which the user perceives as bubbles spawning one-by-one.
+    var isHydratingTools: Bool = false
 
     /// Scrolling strategy: plain `VStack` (not `LazyVStack`) plus
     /// `.defaultScrollAnchor(.bottom)`.
@@ -94,9 +101,13 @@ struct RichChatMessageList: View {
                     }
 
                     ForEach(groups) { group in
-                        MessageGroupView(group: group, turnDurations: turnDurations)
-                            .equatable()
-                            .id("group-\(group.id)")
+                        MessageGroupView(
+                            group: group,
+                            turnDurations: turnDurations,
+                            isHydratingTools: isHydratingTools
+                        )
+                        .equatable()
+                        .id("group-\(group.id)")
                     }
 
                     if isWorking {
@@ -105,8 +116,19 @@ struct RichChatMessageList: View {
                     }
                 }
                 .padding()
-                .animation(.easeInOut(duration: 0.15), value: isLoadingSession)
-                .animation(.easeInOut(duration: 0.15), value: groups.isEmpty)
+                // Intentionally NO `.animation(_:value:)` on this VStack.
+                // `.animation(value:)` applies its animation context to
+                // every descendant change in the same render pass — so
+                // when `groups.isEmpty` flips on session load, the 25+
+                // newly-inserted MessageGroupView children all run
+                // through the implicit transition. Combined with the
+                // per-bubble first-render cost (markdown parsing,
+                // metadata layout) the bubbles cascade in over time
+                // and the user perceives a "loading message-by-message"
+                // effect on opening an old chat. Letting state changes
+                // land instantly is the right trade for chat history;
+                // the empty-state fade was a minor flourish, not a
+                // load-bearing affordance.
             }
             .defaultScrollAnchor(.bottom)
             .onChange(of: scrollTrigger) {
@@ -180,6 +202,13 @@ struct MessageGroupView: View, Equatable {
     /// render the stopwatch pill. Defaults empty so existing callers
     /// that haven't been updated yet still compile.
     var turnDurations: [Int: TimeInterval] = [:]
+    /// Plumbed in from the parent so the coalescing decision can
+    /// participate in the Equatable short-circuit. Without this the
+    /// hydration-end transition wouldn't re-render — `==` would see
+    /// the same `group` + `turnDurations` and skip body. Stored
+    /// property + included in `==` ensures the flag flip cascades
+    /// through every visible bubble exactly once.
+    var isHydratingTools: Bool = false
 
     @Environment(ChatViewModel.self) private var chatViewModel
     /// Read here so the toolSummary pill knows whether to render as
@@ -211,6 +240,10 @@ struct MessageGroupView: View, Equatable {
         guard lhs.group.userMessage?.id == rhs.group.userMessage?.id else { return false }
         guard lhs.group.userMessage?.content == rhs.group.userMessage?.content else { return false }
         guard lhs.group.assistantMessages.count == rhs.group.assistantMessages.count else { return false }
+        // Hydration flag flip changes the assistant-bubble layout
+        // (coalesced vs raw) — must invalidate or the body never
+        // re-evals after Phase 2 finishes.
+        guard lhs.isHydratingTools == rhs.isHydratingTools else { return false }
         for (l, r) in zip(lhs.group.assistantMessages, rhs.group.assistantMessages) {
             if l.id != r.id { return false }
             if l.id == 0 {
@@ -243,8 +276,29 @@ struct MessageGroupView: View, Equatable {
             // Within a single group the assistant messages are
             // append-only, so offset is a stable identity for the
             // group's lifetime.
-            let assistantMessages = group.assistantMessages.filter(\.isAssistant)
-            ForEach(Array(assistantMessages.enumerated()), id: \.offset) { _, message in
+            //
+            // `coalescedAssistantBubbles` collapses runs of consecutive
+            // pure-text assistant messages into one synthesized bubble
+            // so that turns Hermes recorded as multiple `assistant`
+            // rows (split by an interleaving tool call, or emitted as
+            // multiple discrete chunks by some thinking models) read
+            // as one continuous reply. Tool-bearing bubbles and the
+            // streaming bubble (id == 0) are never merged — see the
+            // computed's docs for the invariants.
+            //
+            // Coalescing is GATED on `!isHydratingTools` because the
+            // v2.8 two-phase loader populates `toolCalls` after the
+            // initial render — assistants with empty `toolCalls`
+            // pre-hydration would merge into a single bubble, then
+            // un-merge as Phase 2 reveals each one's tools. The user
+            // perceives this as bubbles spawning one-by-one. By
+            // skipping the merge during hydration we render the raw
+            // shape up front; a single re-render at hydration end
+            // applies coalescing if it's still appropriate.
+            let assistantBubbles = isHydratingTools
+                ? group.assistantMessages.filter(\.isAssistant)
+                : group.coalescedAssistantBubbles.filter(\.isAssistant)
+            ForEach(Array(assistantBubbles.enumerated()), id: \.offset) { _, message in
                 RichMessageBubble(
                     message: message,
                     toolResults: group.toolResults,

@@ -60,6 +60,31 @@ public enum HistoryPageSize: Sendable {
     public nonisolated static let polling = 500
 }
 
+/// In-memory rendering window for the chat transcript. Sits ON TOP of
+/// `HistoryPageSize` (which bounds DB I/O) — `RenderWindow` bounds how
+/// many bubbles the eager-VStack `RichChatMessageList` materializes
+/// at once.
+///
+/// Why a window on top of an already-paginated load: a long live
+/// session accumulates messages without ever hitting the DB-paging
+/// path, and `LazyVStack` is off the table (it caused the documented
+/// "blank space at bottom" bug — see `RichChatMessageList.swift:26-42`).
+/// The "Load earlier messages" affordance grows the window in `step`
+/// chunks before falling through to the DB hop.
+public enum RenderWindow: Sendable {
+    /// Initial trailing window of message groups to render. Tuned
+    /// down from 50 → 30 after dogfooding showed scroll lag on
+    /// long sessions even with the v2.7-era equatable +
+    /// parse-deferral optimizations — the eager VStack still pays
+    /// per-bubble layout cost up front.
+    public nonisolated static let initial = 30
+    /// How many additional groups to reveal per "Load earlier" tap
+    /// before falling through to the DB-paging path. Matches
+    /// `initial` so each tap roughly doubles the visible history
+    /// from cold-load.
+    public nonisolated static let step = 30
+}
+
 // MARK: - File Size Formatting
 
 public enum FileSizeUnit: Sendable {

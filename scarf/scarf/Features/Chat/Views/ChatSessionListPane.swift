@@ -17,6 +17,14 @@ struct ChatSessionListPane: View {
     /// string matches against `chatViewModel.sessionProjectNames`.
     @State private var projectFilter: String?
 
+    /// Hide sessions whose `source` is `"cron"` — these are
+    /// scheduled-job runs that clutter the chat list. Persisted via
+    /// `@AppStorage` so the preference survives across launches.
+    /// Default `true` because the noise-to-signal ratio for cron
+    /// rows in the chat surface is poor: they're more useful inside
+    /// the Cron / Activity feature than as resumable conversations.
+    @AppStorage("scarf.chat.hideCronSessions") private var hideCronSessions: Bool = true
+
     @State private var renameTarget: HermesSession?
     @State private var renameText: String = ""
     @State private var deleteTarget: HermesSession?
@@ -155,6 +163,16 @@ struct ChatSessionListPane: View {
     }
 
     private var projectFilterRow: some View {
+        HStack(spacing: ScarfSpace.s2) {
+            projectFilterMenu
+            Spacer(minLength: 0)
+            cronVisibilityToggle
+        }
+        .padding(.horizontal, ScarfSpace.s3)
+        .padding(.bottom, ScarfSpace.s2)
+    }
+
+    private var projectFilterMenu: some View {
         Menu {
             Button {
                 projectFilter = nil
@@ -206,9 +224,56 @@ struct ChatSessionListPane: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .padding(.horizontal, ScarfSpace.s3)
-        .padding(.bottom, ScarfSpace.s2)
-        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Right-side chip that toggles visibility of cron-originated
+    /// sessions. Filled when cron is HIDDEN (the active-filter look,
+    /// matching the project pill). The hidden-count is read from
+    /// `cronSessionCount` so the user knows how many rows the toggle
+    /// is suppressing.
+    private var cronVisibilityToggle: some View {
+        Button {
+            hideCronSessions.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: hideCronSessions ? "clock.badge.xmark" : "clock")
+                    .font(.system(size: 10))
+                Text(hideCronSessions ? "Cron hidden" : "Cron shown")
+                    .scarfStyle(.caption)
+                    .lineLimit(1)
+                if hideCronSessions, cronSessionCount > 0 {
+                    Text("\(cronSessionCount)")
+                        .font(ScarfFont.caption2)
+                        .foregroundStyle(ScarfColor.foregroundFaint)
+                }
+            }
+            .foregroundStyle(hideCronSessions ? ScarfColor.accentActive : ScarfColor.foregroundPrimary)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 3)
+            .background(
+                Capsule()
+                    .fill(hideCronSessions ? ScarfColor.accentTint : ScarfColor.backgroundSecondary)
+            )
+            .overlay(
+                Capsule()
+                    .strokeBorder(
+                        hideCronSessions ? ScarfColor.accent : Color.clear,
+                        lineWidth: 1
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .help(hideCronSessions
+              ? "Showing user chats only. Click to include cron-originated sessions."
+              : "Showing all chats. Click to hide cron-originated sessions.")
+        .fixedSize()
+    }
+
+    /// How many of the currently-loaded sessions are cron-originated.
+    /// Surfaced as a count badge on the toggle so the hidden volume
+    /// is visible.
+    private var cronSessionCount: Int {
+        chatViewModel.recentSessions.lazy.filter { $0.source == "cron" }.count
     }
 
     private var projectFilterIcon: String {
@@ -254,6 +319,14 @@ struct ChatSessionListPane: View {
 
     private var visibleSessions: [HermesSession] {
         var base = chatViewModel.recentSessions
+        // Cron-source filter — applied first so subsequent filters
+        // operate on the smaller set. Authoritative signal: Hermes
+        // tags every session row with `source` (`"cron"` for
+        // scheduled jobs, `"acp"` for interactive chat, `"cli"` for
+        // one-off CLI runs). Skips a brittle prompt-prefix match.
+        if hideCronSessions {
+            base = base.filter { $0.source != "cron" }
+        }
         // Project filter — same semantics as the Sessions feature.
         if let filter = projectFilter {
             if filter.isEmpty {
@@ -289,6 +362,12 @@ struct ChatSessionListPane: View {
         if chatViewModel.recentSessions.isEmpty {
             return "No sessions yet — tap New to start one."
         }
+        // The cron toggle hides every visible row when the loaded
+        // window is exclusively cron — surface that as the cause
+        // rather than implying a search miss.
+        if hideCronSessions, cronSessionCount == chatViewModel.recentSessions.count {
+            return "All loaded chats are cron-originated. Click 'Cron hidden' above to include them."
+        }
         if projectFilter != nil {
             return "No chats in this project (showing the most recent 50)."
         }
@@ -299,7 +378,9 @@ struct ChatSessionListPane: View {
         HStack(spacing: ScarfSpace.s2) {
             Image(systemName: "bubble.left")
                 .font(.system(size: 10))
-            Text("\(chatViewModel.recentSessions.count) chat\(chatViewModel.recentSessions.count == 1 ? "" : "s")")
+            // Show "X of Y" when filtering hides rows so the user
+            // knows the chip is doing something.
+            Text(footerCountText)
             Spacer()
         }
         .scarfStyle(.caption)
@@ -312,6 +393,16 @@ struct ChatSessionListPane: View {
                 .frame(height: 1),
             alignment: .top
         )
+    }
+
+    private var footerCountText: String {
+        let total = chatViewModel.recentSessions.count
+        let visible = visibleSessions.count
+        let suffix = total == 1 ? "" : "s"
+        if visible == total {
+            return "\(total) chat\(suffix)"
+        }
+        return "\(visible) of \(total) chat\(suffix)"
     }
 }
 

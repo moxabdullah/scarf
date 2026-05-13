@@ -45,14 +45,24 @@ struct ChatTranscriptPane: View {
             // hierarchy on first message caused a full view tree rebuild,
             // which manifests as a white flash.
             RichChatMessageList(
-                groups: richChat.messageGroups,
+                groups: richChat.visibleGroups,
                 isWorking: richChat.isGenerating,
                 isLoadingSession: chatViewModel.isPreparingSession,
                 scrollTrigger: richChat.scrollTrigger,
                 turnDurations: richChat.turnDurations,
-                hasMoreHistory: richChat.hasMoreHistory,
+                // Two-stage Load-earlier: bumps the render window first
+                // (cheap derived-property change), only hops to the DB
+                // once the in-memory tail is exhausted.
+                hasMoreHistory: richChat.hasHiddenInMemoryGroups || richChat.hasMoreHistory,
                 isLoadingEarlier: richChat.isLoadingEarlier,
-                onLoadEarlier: { Task { await richChat.loadEarlier() } }
+                onLoadEarlier: {
+                    if richChat.hasHiddenInMemoryGroups {
+                        richChat.extendRenderWindow()
+                    } else {
+                        Task { await richChat.loadEarlier() }
+                    }
+                },
+                isHydratingTools: richChat.isHydratingTools
             )
 
             Divider()

@@ -65,6 +65,32 @@ public struct HermesMessage: Identifiable, Sendable {
         return reasoning
     }
 
+    /// Stable chronological order across mixed local+DB message arrays.
+    ///
+    /// Sort by `timestamp` ascending; on ties, by `id` ascending. The
+    /// id tie-break is what stops the "user prompt jumps below the
+    /// agent reply" bug — `Date()` collisions are rare but real for
+    /// fast turns (slash commands, cached responses), and Swift's
+    /// `sort` is unstable for arrays past the small-array threshold.
+    ///
+    /// The id tie-break also yields the right user-before-assistant
+    /// ordering on ties because:
+    ///  - User local optimistic msg → negative id (`nextLocalId -= 1`).
+    ///  - Streaming assistant → `id == 0`.
+    ///  - Persisted DB rows → positive monotonic SQLite ROWIDs (the
+    ///    user msg is always inserted before its assistant within a
+    ///    turn, so the user always has the lower id).
+    ///
+    /// Ascending: negatives → 0 → positives. Within the same turn this
+    /// places (local user) → (streaming assistant) → (persisted) in
+    /// the correct visual order even when timestamps tie.
+    public static func chronologicalOrder(_ a: HermesMessage, _ b: HermesMessage) -> Bool {
+        let lt = a.timestamp ?? .distantPast
+        let rt = b.timestamp ?? .distantPast
+        if lt != rt { return lt < rt }
+        return a.id < b.id
+    }
+
     /// Return a copy of this message with `toolCalls` replaced. Used
     /// by the v2.8 two-phase chat loader: skeleton fetch returns
     /// messages with empty `toolCalls`; the background hydrate splices
