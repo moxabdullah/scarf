@@ -78,6 +78,17 @@ struct ScarfIOSApp: App {
                     // memory by the time we read keys.
                     ChatController.pruneStaleDrafts()
                 }
+                .task {
+                    // Subscribe to MetricKit so crash + hang diagnostics
+                    // land in Documents/ScarfDiagnostics/ where the
+                    // Settings → "Share diagnostics" affordance can
+                    // surface them. Apple delivers payloads ~once per
+                    // day after the next launch. Without this we get
+                    // TestFlight feedback comments without stack traces
+                    // — the May 2026 crash batch was guesswork because
+                    // we had no on-device crash logs to inspect.
+                    _ = MetricKitSubscriber.shared
+                }
                 // Clamp Dynamic Type at the scene root. ScarfGo is a
                 // developer tool that needs more density than Apple's
                 // .xxxLarge default, but we still scale from .xSmall

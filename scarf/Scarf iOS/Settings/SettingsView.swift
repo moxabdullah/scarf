@@ -454,10 +454,21 @@ struct SettingsView: View {
             } label: {
                 Label("Performance", systemImage: "speedometer")
             }
+            // Show the share affordance only when MetricKit has actually
+            // persisted a payload to Documents/ScarfDiagnostics/. Apple
+            // delivers payloads roughly once per 24h after a crash/hang,
+            // so on a healthy device the row stays hidden — no
+            // misleading "share crash" affordance when nothing has
+            // crashed.
+            if let url = MetricKitSubscriber.mostRecentDiagnosticFile() {
+                ShareLink(item: url) {
+                    Label("Share Latest Diagnostic", systemImage: "doc.badge.arrow.up")
+                }
+            }
         } header: {
             Text("Diagnostics")
         } footer: {
-            Text("Performance instrumentation. Default mode emits Instruments signposts only; Full mode also keeps a 4096-entry in-memory ring you can copy as JSON.")
+            Text("Performance instrumentation. Default mode emits Instruments signposts only; Full mode also keeps a 4096-entry in-memory ring you can copy as JSON. Crash + hang diagnostics from MetricKit are persisted locally and appear here for sharing when Apple delivers them (~once per day after a crash).")
                 .font(.caption)
         }
     }
