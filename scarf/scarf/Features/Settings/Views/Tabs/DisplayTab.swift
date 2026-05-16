@@ -5,6 +5,7 @@ import ScarfDesign
 /// Display tab — streaming, reasoning, cost, skin, compact mode, inline diffs, bell, etc.
 struct DisplayTab: View {
     @Bindable var viewModel: SettingsViewModel
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
 
     /// Scarf-local chat density preferences (issues #47 / #48).
     /// Independent of the Hermes config flags rendered in the
@@ -68,6 +69,13 @@ struct DisplayTab: View {
             ToggleRow(label: "Interim Messages", isOn: viewModel.config.interimAssistantMessages) { viewModel.setInterimAssistantMessages($0) }
             ToggleRow(label: "Verbose", isOn: viewModel.config.verbose) { viewModel.setVerbose($0) }
             ToggleRow(label: "Inline Diffs", isOn: viewModel.config.display.inlineDiffs) { viewModel.setInlineDiffs($0) }
+            // v0.14 — per-message timestamps in TUI output. ACP chat
+            // renders timestamps independently (the streaming chip
+            // shows wall-clock turn duration); this toggle only
+            // affects the CLI TUI.
+            if capabilitiesStore?.capabilities.hasDisplayTimestamps == true {
+                ToggleRow(label: "Show Timestamps", isOn: viewModel.config.display.timestamps) { viewModel.setDisplayTimestamps($0) }
+            }
         }
 
         SettingsSection(title: "Layout", icon: "rectangle.3.group") {

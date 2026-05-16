@@ -4,6 +4,7 @@ import ScarfDesign
 
 struct DiscordSetupView: View {
     @State private var viewModel: DiscordSetupViewModel
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
     init(context: ServerContext) { _viewModel = State(initialValue: DiscordSetupViewModel(context: context)) }
 
 
@@ -28,6 +29,9 @@ struct DiscordSetupView: View {
                 ToggleRow(label: "Reactions", isOn: viewModel.reactions) { viewModel.reactions = $0 }
                 PickerRow(label: "Allow Other Bots", selection: viewModel.allowBots, options: viewModel.allowBotsOptions) { viewModel.allowBots = $0 }
                 PickerRow(label: "Reply Mode", selection: viewModel.replyToMode, options: viewModel.replyToModeOptions) { viewModel.replyToMode = $0 }
+                if capabilitiesStore?.capabilities.hasDiscordHistoryBackfill == true {
+                    ToggleRow(label: "Backfill channel history on join", isOn: viewModel.historyBackfill) { viewModel.historyBackfill = $0 }
+                }
             }
 
             saveBar

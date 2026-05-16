@@ -651,7 +651,8 @@ struct HermesFileService: Sendable {
                 resourcesEnabled: server.resourcesEnabled,
                 promptsEnabled: server.promptsEnabled,
                 hasOAuthToken: hasToken,
-                sseReadTimeout: server.sseReadTimeout
+                sseReadTimeout: server.sseReadTimeout,
+                supportsParallelToolCalls: server.supportsParallelToolCalls
             )
         }
     }
@@ -709,6 +710,27 @@ struct HermesFileService: Sendable {
                 Self.replaceOrInsertScalar(key: "sse_read_timeout", value: String(timeout), in: &entryLines)
             } else {
                 Self.removeScalar(key: "sse_read_timeout", in: &entryLines)
+            }
+        }
+    }
+
+    /// Updates the v0.14 `supports_parallel_tool_calls` scalar on an MCP
+    /// server entry. Pass `nil` to drop the key (Hermes default applies);
+    /// pass `true` / `false` to opt this server in or out explicitly.
+    /// Caller is responsible for capability-gating —
+    /// `HermesCapabilities.hasMCPParallelToolCalls`. Pre-v0.14 hosts
+    /// silently ignore the key.
+    @discardableResult
+    nonisolated func setMCPServerParallelToolCalls(name: String, enabled: Bool?) -> Bool {
+        patchMCPServerField(name: name) { entryLines in
+            if let value = enabled {
+                Self.replaceOrInsertScalar(
+                    key: "supports_parallel_tool_calls",
+                    value: value ? "true" : "false",
+                    in: &entryLines
+                )
+            } else {
+                Self.removeScalar(key: "supports_parallel_tool_calls", in: &entryLines)
             }
         }
     }
@@ -912,6 +934,15 @@ struct HermesFileService: Sendable {
             let timeout = fields["timeout"].flatMap(Int.init)
             let connectTimeout = fields["connect_timeout"].flatMap(Int.init)
             let sseReadTimeout = fields["sse_read_timeout"].flatMap(Int.init)
+            // v0.14 — supports_parallel_tool_calls is an optional bool;
+            // absent means "use Hermes's default" and stays nil.
+            let parallelStr = fields["supports_parallel_tool_calls"]?.lowercased()
+            let parallel: Bool? = {
+                guard let s = parallelStr else { return nil }
+                if s == "true" { return true }
+                if s == "false" { return false }
+                return nil
+            }()
             let server = HermesMCPServer(
                 name: name,
                 transport: transport,
@@ -929,7 +960,8 @@ struct HermesFileService: Sendable {
                 resourcesEnabled: resources,
                 promptsEnabled: prompts,
                 hasOAuthToken: false,
-                sseReadTimeout: sseReadTimeout
+                sseReadTimeout: sseReadTimeout,
+                supportsParallelToolCalls: parallel
             )
             servers.append(server)
 

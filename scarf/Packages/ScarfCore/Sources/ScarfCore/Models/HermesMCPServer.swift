@@ -44,6 +44,12 @@ public struct HermesMCPServer: Identifiable, Sendable, Equatable {
     // TODO(WS-7-Q2): Default is assumed to be 300s per WS-7 plan; placeholder
     // copy uses that. Verify against `~/.hermes/hermes-agent/hermes_cli/mcp.py`.
     public let sseReadTimeout: Int?
+    /// Hermes v0.14+ — when `true`, the agent batches concurrent tool
+    /// calls to this MCP server instead of serializing them. `nil`
+    /// means "use Hermes's default" (currently false). The setting
+    /// surfaces in MCPServerEditorView as an optional toggle when
+    /// `HermesCapabilities.hasMCPParallelToolCalls` is on.
+    public let supportsParallelToolCalls: Bool?
 
 
     public init(
@@ -63,7 +69,8 @@ public struct HermesMCPServer: Identifiable, Sendable, Equatable {
         resourcesEnabled: Bool,
         promptsEnabled: Bool,
         hasOAuthToken: Bool,
-        sseReadTimeout: Int? = nil
+        sseReadTimeout: Int? = nil,
+        supportsParallelToolCalls: Bool? = nil
     ) {
         self.name = name
         self.transport = transport
@@ -82,6 +89,7 @@ public struct HermesMCPServer: Identifiable, Sendable, Equatable {
         self.promptsEnabled = promptsEnabled
         self.hasOAuthToken = hasOAuthToken
         self.sseReadTimeout = sseReadTimeout
+        self.supportsParallelToolCalls = supportsParallelToolCalls
     }
     public var id: String { name }
 

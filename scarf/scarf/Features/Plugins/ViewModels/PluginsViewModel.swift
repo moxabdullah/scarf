@@ -9,6 +9,11 @@ struct HermesPlugin: Identifiable, Sendable, Equatable {
     let enabled: Bool       // True unless a `.disabled` marker exists
     let version: String     // From plugin.json / manifest if present
     let path: String        // Absolute directory path
+    /// Hermes v0.14 — plugin advertises `tool_override = true` in its
+    /// manifest, meaning it replaces a built-in tool. Rendered as a
+    /// "tool-override" badge in PluginsView so the user notices when
+    /// installed plugins are intercepting built-in behavior.
+    let toolOverride: Bool
 }
 
 @Observable
@@ -56,7 +61,8 @@ final class PluginsViewModel {
                             source: manifest.source,
                             enabled: !disabled,
                             version: manifest.version,
-                            path: path
+                            path: path,
+                            toolOverride: manifest.toolOverride
                         ))
                     }
                 }
@@ -71,22 +77,27 @@ final class PluginsViewModel {
 
     /// Static form of readManifest used by the detached load task. The
     /// instance form delegates to this so both call paths share logic.
-    nonisolated fileprivate static func readManifestStatic(path: String, context: ServerContext) -> (source: String, version: String) {
+    nonisolated fileprivate static func readManifestStatic(path: String, context: ServerContext) -> (source: String, version: String, toolOverride: Bool) {
         let jsonPath = path + "/plugin.json"
         if let data = context.readData(jsonPath),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             let source = (obj["source"] as? String) ?? (obj["repository"] as? String) ?? (obj["url"] as? String) ?? ""
             let version = (obj["version"] as? String) ?? ""
-            return (source, version)
+            // v0.14 — `tool_override: true` opt-in. Accept both spellings
+            // because plugin authors might use camelCase.
+            let toolOverride = (obj["tool_override"] as? Bool) ?? (obj["toolOverride"] as? Bool) ?? false
+            return (source, version, toolOverride)
         }
         let yamlPath = path + "/plugin.yaml"
         if let yaml = context.readText(yamlPath) {
             let parsed = HermesFileService.parseNestedYAML(yaml)
             let source = HermesFileService.stripYAMLQuotes(parsed.values["source"] ?? parsed.values["repository"] ?? parsed.values["url"] ?? "")
             let version = HermesFileService.stripYAMLQuotes(parsed.values["version"] ?? "")
-            return (source, version)
+            let toolOverrideRaw = HermesFileService.stripYAMLQuotes(parsed.values["tool_override"] ?? "").lowercased()
+            let toolOverride = (toolOverrideRaw == "true")
+            return (source, version, toolOverride)
         }
-        return ("", "")
+        return ("", "", false)
     }
 
     // (readManifestStatic above is the new implementation; the instance

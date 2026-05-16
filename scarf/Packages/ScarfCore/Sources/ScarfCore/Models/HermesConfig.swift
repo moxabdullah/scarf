@@ -43,6 +43,14 @@ public struct DisplaySettings: Sendable, Equatable {
     /// `hermes config set display.language <code>`. Supported values per
     /// v0.13 release notes: `en`, `zh`, `ja`, `de`, `es`, `fr`, `uk`, `tr`.
     public var language: String
+    /// Hermes v0.14 — `display.timestamps` toggle. When true, the TUI
+    /// renders per-message timestamps alongside the agent's output;
+    /// ACP-relayed transcripts pick up the agent's own footer
+    /// formatting and Scarf doesn't render them separately. Persisted
+    /// via `hermes config set display.timestamps <bool>`. Pre-v0.14
+    /// hosts ignore the key; Scarf hides the toggle when
+    /// `HermesCapabilities.hasDisplayTimestamps` is false.
+    public var timestamps: Bool
 
 
     public init(
@@ -54,7 +62,8 @@ public struct DisplaySettings: Sendable, Equatable {
         toolProgressCommand: Bool,
         toolPreviewLength: Int,
         busyInputMode: String,
-        language: String = ""
+        language: String = "",
+        timestamps: Bool = false
     ) {
         self.skin = skin
         self.compact = compact
@@ -65,6 +74,7 @@ public struct DisplaySettings: Sendable, Equatable {
         self.toolPreviewLength = toolPreviewLength
         self.busyInputMode = busyInputMode
         self.language = language
+        self.timestamps = timestamps
     }
     public nonisolated static let empty = DisplaySettings(
         skin: "default",
@@ -75,7 +85,8 @@ public struct DisplaySettings: Sendable, Equatable {
         toolProgressCommand: false,
         toolPreviewLength: 0,
         busyInputMode: "interrupt",
-        language: ""
+        language: "",
+        timestamps: false
     )
 }
 
@@ -89,6 +100,12 @@ public struct TerminalSettings: Sendable, Equatable {
     public var dockerMountCwdToWorkspace: Bool
     public var dockerForwardEnv: [String]
     public var dockerVolumes: [String]
+    /// Hermes v0.14 — extra flags forwarded verbatim to `docker run` for
+    /// the docker terminal backend (`terminal.docker_extra_args` in
+    /// config.yaml, a list of strings). Empty list means "no extras".
+    /// Pre-v0.14 hosts ignore the key; Scarf hides the editor row when
+    /// `HermesCapabilities.hasDockerExtraArgs` is false.
+    public var dockerExtraArgs: [String]
     public var containerCPU: Int               // 0 = unlimited
     public var containerMemory: Int            // MB, 0 = unlimited
     public var containerDisk: Int              // MB, 0 = unlimited
@@ -108,6 +125,7 @@ public struct TerminalSettings: Sendable, Equatable {
         dockerMountCwdToWorkspace: Bool,
         dockerForwardEnv: [String],
         dockerVolumes: [String],
+        dockerExtraArgs: [String] = [],
         containerCPU: Int,
         containerMemory: Int,
         containerDisk: Int,
@@ -125,6 +143,7 @@ public struct TerminalSettings: Sendable, Equatable {
         self.dockerMountCwdToWorkspace = dockerMountCwdToWorkspace
         self.dockerForwardEnv = dockerForwardEnv
         self.dockerVolumes = dockerVolumes
+        self.dockerExtraArgs = dockerExtraArgs
         self.containerCPU = containerCPU
         self.containerMemory = containerMemory
         self.containerDisk = containerDisk
@@ -143,6 +162,7 @@ public struct TerminalSettings: Sendable, Equatable {
         dockerMountCwdToWorkspace: false,
         dockerForwardEnv: [],
         dockerVolumes: [],
+        dockerExtraArgs: [],
         containerCPU: 0,
         containerMemory: 0,
         containerDisk: 0,
@@ -488,20 +508,27 @@ public struct DiscordSettings: Sendable, Equatable {
     public var freeResponseChannels: String
     public var autoThread: Bool
     public var reactions: Bool
+    /// Hermes v0.14 — when true, the Discord adapter reads recent
+    /// channel history on first join so the agent has prior context.
+    /// Default `true` matches Hermes's v0.14 server-side default.
+    /// Pre-v0.14 hosts ignore the key.
+    public var historyBackfill: Bool
 
 
     public init(
         requireMention: Bool,
         freeResponseChannels: String,
         autoThread: Bool,
-        reactions: Bool
+        reactions: Bool,
+        historyBackfill: Bool = true
     ) {
         self.requireMention = requireMention
         self.freeResponseChannels = freeResponseChannels
         self.autoThread = autoThread
         self.reactions = reactions
+        self.historyBackfill = historyBackfill
     }
-    public nonisolated static let empty = DiscordSettings(requireMention: true, freeResponseChannels: "", autoThread: true, reactions: true)
+    public nonisolated static let empty = DiscordSettings(requireMention: true, freeResponseChannels: "", autoThread: true, reactions: true, historyBackfill: true)
 }
 
 /// Telegram settings under `telegram.*` in config.yaml. Most Telegram tuning is

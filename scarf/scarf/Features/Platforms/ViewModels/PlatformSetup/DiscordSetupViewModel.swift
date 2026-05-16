@@ -23,6 +23,11 @@ final class DiscordSetupViewModel {
     var freeResponseChannels: String = ""
     var autoThread: Bool = true
     var reactions: Bool = true
+    /// Hermes v0.14 — when joining a thread or channel for the first
+    /// time, read recent history so the agent knows what's been said.
+    /// Default is `true` to match Hermes's v0.14 server-side default.
+    /// Capability-gated by the host UI on `hasDiscordHistoryBackfill`.
+    var historyBackfill: Bool = true
 
     var message: String?
 
@@ -43,6 +48,7 @@ final class DiscordSetupViewModel {
         freeResponseChannels = cfg.freeResponseChannels
         autoThread = cfg.autoThread
         reactions = cfg.reactions
+        historyBackfill = cfg.historyBackfill
     }
 
     func save() {
@@ -58,7 +64,8 @@ final class DiscordSetupViewModel {
             "discord.require_mention": PlatformSetupHelpers.envBool(requireMention),
             "discord.free_response_channels": freeResponseChannels,
             "discord.auto_thread": PlatformSetupHelpers.envBool(autoThread),
-            "discord.reactions": PlatformSetupHelpers.envBool(reactions)
+            "discord.reactions": PlatformSetupHelpers.envBool(reactions),
+            "discord.history_backfill": PlatformSetupHelpers.envBool(historyBackfill)
         ]
         message = PlatformSetupHelpers.saveForm(context: context, envPairs: envPairs, configKV: configKV)
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in

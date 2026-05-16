@@ -6,6 +6,7 @@ struct MCPServerEditorView: View {
     @State var viewModel: MCPServerEditorViewModel
     let onSave: (Bool) -> Void
     let onCancel: () -> Void
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
 
     var body: some View {
         VStack(spacing: 0) {
@@ -56,6 +57,9 @@ struct MCPServerEditorView: View {
                     }
                     toolsSection
                     timeoutsSection
+                    if capabilitiesStore?.capabilities.hasMCPParallelToolCalls == true {
+                        parallelToolCallsSection
+                    }
                     if viewModel.server.hasOAuthToken {
                         oauthSection
                     }
@@ -197,6 +201,45 @@ struct MCPServerEditorView: View {
                     }
                 }
                 Spacer()
+            }
+        }
+    }
+
+    /// v0.14 — tri-state picker for `supports_parallel_tool_calls`.
+    /// "Default (Hermes decides)" maps to nil and drops the YAML key
+    /// entirely; "Enabled" / "Disabled" write the explicit bool. The
+    /// section is hidden on pre-v0.14 hosts via the capability gate
+    /// in `body`.
+    private var parallelToolCallsSection: some View {
+        sectionBox(title: "Parallel tool calls") {
+            VStack(alignment: .leading, spacing: 8) {
+                Picker(
+                    "supports_parallel_tool_calls",
+                    selection: Binding<Int>(
+                        get: {
+                            switch viewModel.parallelToolCallsDraft {
+                            case .none: return 0
+                            case .some(true): return 1
+                            case .some(false): return 2
+                            }
+                        },
+                        set: { newValue in
+                            switch newValue {
+                            case 1: viewModel.parallelToolCallsDraft = true
+                            case 2: viewModel.parallelToolCallsDraft = false
+                            default: viewModel.parallelToolCallsDraft = nil
+                            }
+                        }
+                    )
+                ) {
+                    Text("Default (Hermes decides)").tag(0)
+                    Text("Enabled").tag(1)
+                    Text("Disabled").tag(2)
+                }
+                .pickerStyle(.segmented)
+                Text("When enabled, Hermes can batch concurrent tool calls to this MCP server instead of serializing them. Requires Hermes v0.14+.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }

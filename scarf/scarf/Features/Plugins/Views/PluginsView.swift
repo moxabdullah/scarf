@@ -117,6 +117,13 @@ struct PluginsView: View {
                             .font(.caption2.monospaced())
                             .foregroundStyle(.secondary)
                     }
+                    // v0.14 — surface plugins that replace a built-in
+                    // tool with a visible badge so users notice
+                    // overridden behavior. The flag comes from the
+                    // plugin's manifest (`tool_override: true`).
+                    if plugin.toolOverride {
+                        ScarfBadge("tool-override", kind: .info)
+                    }
                 }
                 if !plugin.source.isEmpty {
                     Text(plugin.source)

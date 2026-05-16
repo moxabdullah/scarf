@@ -24,6 +24,11 @@ final class MCPServerEditorViewModel {
     /// SSE-only — renders as a third numeric on `.sse` servers. Empty string
     /// means "use Hermes default" (writer drops the scalar).
     var sseReadTimeoutDraft: String
+    /// v0.14 — supports_parallel_tool_calls toggle. Three states:
+    /// nil = "use Hermes default" (no key written), true = opt in,
+    /// false = opt out explicitly. Bound to a tri-state Picker in the
+    /// editor under the v0.14 capability gate.
+    var parallelToolCallsDraft: Bool?
     var showSecrets: Bool = false
     var isSaving: Bool = false
     var saveError: String?
@@ -41,6 +46,7 @@ final class MCPServerEditorViewModel {
         self.timeoutDraft = server.timeout.map { String($0) } ?? ""
         self.connectTimeoutDraft = server.connectTimeout.map { String($0) } ?? ""
         self.sseReadTimeoutDraft = server.sseReadTimeout.map { String($0) } ?? ""
+        self.parallelToolCallsDraft = server.supportsParallelToolCalls
     }
 
     func appendEnvRow() {
@@ -75,6 +81,8 @@ final class MCPServerEditorViewModel {
         let connectValue = Int(connectTimeoutDraft.trimmingCharacters(in: .whitespaces))
         let trimmedSSE = sseReadTimeoutDraft.trimmingCharacters(in: .whitespaces)
         let sseTimeoutValue: Int? = trimmedSSE.isEmpty ? nil : Int(trimmedSSE)
+        let parallelDraft = parallelToolCallsDraft
+        let originalParallel = server.supportsParallelToolCalls
 
         let service = fileService
         let transport = server.transport
@@ -108,6 +116,17 @@ final class MCPServerEditorViewModel {
                 ) { ok = false }
                 if !service.setMCPServerTimeouts(name: name, timeout: timeoutValue, connectTimeout: connectValue) {
                     ok = false
+                }
+                // v0.14 — only write the parallel-tool-calls scalar when
+                // the user touched the field. Skipping a no-op write
+                // keeps the YAML diff small and avoids churning the
+                // file when the toggle wasn't surfaced (pre-v0.14 hosts
+                // hide the row entirely, so parallelDraft == originalParallel
+                // there as well).
+                if parallelDraft != originalParallel {
+                    if !service.setMCPServerParallelToolCalls(name: name, enabled: parallelDraft) {
+                        ok = false
+                    }
                 }
                 return ok
             }()

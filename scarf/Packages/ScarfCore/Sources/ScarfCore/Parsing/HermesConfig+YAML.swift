@@ -55,7 +55,9 @@ public extension HermesConfig {
             inlineDiffs: bool("display.inline_diffs", default: true),
             toolProgressCommand: bool("display.tool_progress_command", default: false),
             toolPreviewLength: int("display.tool_preview_length", default: 0),
-            busyInputMode: str("display.busy_input_mode", default: "interrupt")
+            busyInputMode: str("display.busy_input_mode", default: "interrupt"),
+            language: str("display.language"),
+            timestamps: bool("display.timestamps", default: false)
         )
 
         let terminal = TerminalSettings(
@@ -67,6 +69,7 @@ public extension HermesConfig {
             dockerMountCwdToWorkspace: bool("terminal.docker_mount_cwd_to_workspace", default: false),
             dockerForwardEnv: lists["terminal.docker_forward_env"] ?? [],
             dockerVolumes: lists["terminal.docker_volumes"] ?? [],
+            dockerExtraArgs: lists["terminal.docker_extra_args"] ?? [],
             containerCPU: int("terminal.container_cpu", default: 0),
             containerMemory: int("terminal.container_memory", default: 0),
             containerDisk: int("terminal.container_disk", default: 0),
@@ -173,7 +176,8 @@ public extension HermesConfig {
             requireMention: bool("discord.require_mention", default: true),
             freeResponseChannels: str("discord.free_response_channels"),
             autoThread: bool("discord.auto_thread", default: true),
-            reactions: bool("discord.reactions", default: true)
+            reactions: bool("discord.reactions", default: true),
+            historyBackfill: bool("discord.history_backfill", default: true)
         )
 
         let telegram = TelegramSettings(

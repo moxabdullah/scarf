@@ -28,6 +28,12 @@ struct CronView: View {
     private var hasCronNoAgent: Bool {
         capabilitiesStore?.capabilities.hasCronNoAgent ?? false
     }
+    /// v0.14 — `deliver=all` cron routing intent. Capability-gated so
+    /// pre-v0.14 hosts don't see the placeholder hint and don't get
+    /// the helper line under the field.
+    private var hasCronDeliverAll: Bool {
+        capabilitiesStore?.capabilities.hasCronDeliverAll ?? false
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -51,7 +57,7 @@ struct CronView: View {
         // polling timer. Same wiring ActivityView uses.
         .onChange(of: fileWatcher.lastChangeDate) { viewModel.load() }
         .sheet(isPresented: $viewModel.showCreateSheet) {
-            CronJobEditor(mode: .create, availableSkills: viewModel.availableSkills, supportsWorkdir: hasCronWorkdir, supportsNoAgent: hasCronNoAgent) { form in
+            CronJobEditor(mode: .create, availableSkills: viewModel.availableSkills, supportsWorkdir: hasCronWorkdir, supportsNoAgent: hasCronNoAgent, supportsDeliverAll: hasCronDeliverAll) { form in
                 viewModel.createJob(
                     schedule: form.schedule,
                     prompt: form.prompt,
@@ -73,7 +79,7 @@ struct CronView: View {
             }
         }
         .sheet(item: $viewModel.editingJob) { job in
-            CronJobEditor(mode: .edit(job), availableSkills: viewModel.availableSkills, supportsWorkdir: hasCronWorkdir, supportsNoAgent: hasCronNoAgent) { form in
+            CronJobEditor(mode: .edit(job), availableSkills: viewModel.availableSkills, supportsWorkdir: hasCronWorkdir, supportsNoAgent: hasCronNoAgent, supportsDeliverAll: hasCronDeliverAll) { form in
                 viewModel.updateJob(
                     id: job.id,
                     schedule: form.schedule,
@@ -667,6 +673,11 @@ struct CronJobEditor: View {
     /// and the parent strips the form's value before calling
     /// `createJob`/`updateJob`. Mirrors the `supportsWorkdir` pattern.
     let supportsNoAgent: Bool
+    /// Pass `true` on v0.14+ hosts so the Deliver placeholder mentions
+    /// the new `all` fan-out value. The field itself is free-form so
+    /// the user can always type `all` on any host; the placeholder is
+    /// the only behavior change.
+    var supportsDeliverAll: Bool = false
     let onSave: (FormState) -> Void
     let onCancel: () -> Void
 
@@ -700,7 +711,19 @@ struct CronJobEditor: View {
             }
             .opacity(form.noAgent ? 0.4 : 1.0)
             .disabled(form.noAgent)
-            formField("Deliver", text: $form.deliver, placeholder: "origin | local | discord:CHANNEL | telegram:CHAT", mono: true)
+            formField(
+                "Deliver",
+                text: $form.deliver,
+                placeholder: supportsDeliverAll
+                    ? "origin | local | all | discord:CHANNEL | telegram:CHAT"
+                    : "origin | local | discord:CHANNEL | telegram:CHAT",
+                mono: true
+            )
+            if supportsDeliverAll {
+                Text("`all` fans out to every connected channel — v0.14+ only.")
+                    .scarfStyle(.caption)
+                    .foregroundStyle(ScarfColor.foregroundMuted)
+            }
             formField("Repeat", text: $form.repeatCount, placeholder: "Optional count")
             formField("Script path", text: $form.script, placeholder: "Python script whose stdout is injected", mono: true)
             if supportsWorkdir {

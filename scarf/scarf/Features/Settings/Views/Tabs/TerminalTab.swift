@@ -5,6 +5,12 @@ import ScarfCore
 /// Heavy docker/container settings are hidden unless a container backend is selected.
 struct TerminalTab: View {
     @Bindable var viewModel: SettingsViewModel
+    @Environment(\.hermesCapabilities) private var capabilitiesStore
+    /// v0.14 — local draft for the docker_extra_args CSV row. Synced
+    /// back to YAML via `setDockerExtraArgs(_:)`. Initialized from the
+    /// config in `.onAppear` so loads after a v0.14 host upgrade
+    /// surface existing values immediately.
+    @State private var dockerExtraArgsDraft: String = ""
 
     var body: some View {
         SettingsSection(title: "Backend", icon: "terminal") {
@@ -27,11 +33,26 @@ struct TerminalTab: View {
             SettingsSection(title: "Docker", icon: "shippingbox") {
                 EditableTextField(label: "Image", value: viewModel.config.terminal.dockerImage) { viewModel.setDockerImage($0) }
                 ToggleRow(label: "Mount CWD", isOn: viewModel.config.terminal.dockerMountCwdToWorkspace) { viewModel.setDockerMountCwd($0) }
+                // v0.14 — extra args forwarded verbatim to `docker run`.
+                // Comma-separated input; the setter splits + writes a
+                // proper YAML list.
+                if capabilitiesStore?.capabilities.hasDockerExtraArgs == true {
+                    EditableTextField(
+                        label: "Extra args",
+                        value: dockerExtraArgsDraft
+                    ) { newValue in
+                        dockerExtraArgsDraft = newValue
+                        viewModel.setDockerExtraArgs(newValue)
+                    }
+                }
                 if !viewModel.config.dockerEnv.isEmpty {
                     ForEach(viewModel.config.dockerEnv.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
                         ReadOnlyRow(label: key, value: value)
                     }
                 }
+            }
+            .onAppear {
+                dockerExtraArgsDraft = viewModel.config.terminal.dockerExtraArgs.joined(separator: ", ")
             }
         }
 

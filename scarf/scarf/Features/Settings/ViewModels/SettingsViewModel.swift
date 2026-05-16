@@ -131,6 +131,11 @@ final class SettingsViewModel {
     /// string writes "" via `hermes config set` which Hermes treats as
     /// "use default"; explicit codes pin the language.
     func setDisplayLanguage(_ value: String) { setSetting("display.language", value: value) }
+    /// v0.14: `display.timestamps` toggle for per-message timestamps
+    /// in TUI output. Capability-gated in the UI on
+    /// `HermesCapabilities.hasDisplayTimestamps`; this setter is safe
+    /// to call against pre-v0.14 hosts (Hermes ignores unknown keys).
+    func setDisplayTimestamps(_ value: Bool) { setSetting("display.timestamps", value: value ? "true" : "false") }
 
     // MARK: - Agent
 
@@ -152,6 +157,18 @@ final class SettingsViewModel {
     func setPersistentShell(_ value: Bool) { setSetting("terminal.persistent_shell", value: value ? "true" : "false") }
     func setDockerImage(_ value: String) { setSetting("terminal.docker_image", value: value) }
     func setDockerMountCwd(_ value: Bool) { setSetting("terminal.docker_mount_cwd_to_workspace", value: value ? "true" : "false") }
+    /// v0.14: `terminal.docker_extra_args` — extra args forwarded
+    /// verbatim to `docker run`. The picker accepts a comma-separated
+    /// list; the setter splits + trims + writes a YAML list. Empty
+    /// input drops the key (Hermes default applies).
+    func setDockerExtraArgs(_ rawCSV: String) {
+        let items = rawCSV
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        let yaml = items.isEmpty ? "[]" : "[" + items.map { "\"\($0)\"" }.joined(separator: ", ") + "]"
+        setSetting("terminal.docker_extra_args", value: yaml)
+    }
     func setContainerCPU(_ value: Int) { setSetting("terminal.container_cpu", value: String(value)) }
     func setContainerMemory(_ value: Int) { setSetting("terminal.container_memory", value: String(value)) }
     func setContainerDisk(_ value: Int) { setSetting("terminal.container_disk", value: String(value)) }
