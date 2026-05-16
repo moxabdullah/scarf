@@ -41,6 +41,17 @@ struct ProjectTemplateManifest: Codable, Sendable, Equatable {
     /// to surface the tenant to the agent in the AGENTS.md block.
     var kanbanTenant: String? = nil
 
+    /// Per-project model preset binding. UUID-as-string referencing a
+    /// record in `~/.hermes/scarf/model_presets.json`. Resolved at chat
+    /// session boot — if non-nil and the bound preset still exists,
+    /// Scarf calls `session/set_model` immediately after the ACP
+    /// `session/new` returns so the user's first prompt runs on the
+    /// chosen model. Nil → inherit the global default from
+    /// `config.yaml`. Bound by id (not name) so renaming a preset
+    /// doesn't break the reference. Persisted by
+    /// `ProjectModelPresetBinding`.
+    var modelPresetID: String? = nil
+
     /// Filesystem-safe slug derived from `id` (`"owner/name"` → `"owner-name"`).
     /// Used for the install directory name, skills namespace, and cron-job tag.
     nonisolated var slug: String {

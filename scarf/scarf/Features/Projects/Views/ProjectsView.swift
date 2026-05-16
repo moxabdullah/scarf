@@ -65,6 +65,11 @@ struct ProjectsView: View {
     /// delegates up.
     @State private var moveTarget: ProjectEntry?
 
+    /// Project queued for the model-preset binding sheet.
+    /// Parent owns the sheet state; the sidebar context-menu
+    /// item only routes the user intent up via `onSetModel`.
+    @State private var modelPresetTarget: ProjectEntry?
+
     private let uninstaller: ProjectTemplateUninstaller
 
     init(context: ServerContext) {
@@ -191,6 +196,12 @@ struct ProjectsView: View {
         }
         .sheet(item: $configEditorProject) { project in
             ConfigEditorSheet(
+                context: serverContext,
+                project: project
+            )
+        }
+        .sheet(item: $modelPresetTarget) { project in
+            ProjectModelPresetSheet(
                 context: serverContext,
                 project: project
             )
@@ -381,7 +392,14 @@ struct ProjectsView: View {
             onRemoveFromList: { pendingRemoveFromList = $0 },
             onRename: { renameTarget = $0 },
             onMoveToFolder: { moveTarget = $0 },
-            onAddProject: { showingAddSheet = true }
+            onAddProject: { showingAddSheet = true },
+            // Gate the "Set Model…" context menu entry on the host
+            // supporting the session/set_model RPC (v0.13+). Pre-v0.13
+            // hosts hide the menu item so users don't bind a preset
+            // that wouldn't apply at runtime.
+            onSetModel: (capabilitiesStore?.capabilities.hasACPSetSessionModel ?? false)
+                ? { modelPresetTarget = $0 }
+                : nil
         )
         .sheet(isPresented: $showingAddSheet) {
             AddProjectSheet(context: serverContext) { name, path in

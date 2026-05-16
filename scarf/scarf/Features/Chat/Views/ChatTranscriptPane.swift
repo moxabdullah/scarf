@@ -36,7 +36,11 @@ struct ChatTranscriptPane: View {
                 queuedPrompts: richChat.queuedPrompts,
                 capabilities: capabilitiesStore?.capabilities ?? .empty,
                 kanbanLiveCount: kanbanBadgeViewModel?.liveCount,
-                onOpenKanban: { handleOpenKanban() }
+                onOpenKanban: { handleOpenKanban() },
+                modelPreset: chatViewModel.currentModelPreset,
+                onSwitchModel: { preset in
+                    chatViewModel.switchModelPreset(preset)
+                }
             )
             Divider()
 

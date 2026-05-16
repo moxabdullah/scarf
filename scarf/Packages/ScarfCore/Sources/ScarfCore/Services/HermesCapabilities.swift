@@ -210,6 +210,13 @@ public struct HermesCapabilities: Sendable, Equatable {
     /// PluginsView surfaces it as a documented hook in plugin metadata.
     public var hasTransformLLMOutputHook: Bool { atLeastSemver(0, 13, 0) }
 
+    /// ACP `session/set_model` JSON-RPC method (v0.13+). Lets Scarf
+    /// switch the model on a live session — used at session boot to
+    /// apply a project's bound model preset, and at user-tap time
+    /// from the chat header to swap mid-conversation. Pre-v0.13
+    /// hosts ignore the call and stay on the config.yaml default.
+    public var hasACPSetSessionModel: Bool { atLeastSemver(0, 13, 0) }
+
     // MARK: Convenience predicates
 
     /// Whether the connected host is on the v0.13 line or newer. Convenience

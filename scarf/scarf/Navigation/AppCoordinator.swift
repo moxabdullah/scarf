@@ -21,6 +21,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     case plugins = "Plugins"
     case webhooks = "Webhooks"
     case profiles = "Profiles"
+    case models = "Models"
     // Manage
     case tools = "Tools"
     case mcpServers = "MCP Servers"
@@ -51,6 +52,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .plugins: return "Plugins"
         case .webhooks: return "Webhooks"
         case .profiles: return "Profiles"
+        case .models: return "Models"
         case .tools: return "Tools"
         case .mcpServers: return "MCP Servers"
         case .gateway: return "Messaging Gateway"
@@ -80,6 +82,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .plugins: return "app.badge.checkmark"
         case .webhooks: return "arrow.up.right.square"
         case .profiles: return "person.2.crop.square.stack"
+        case .models: return "cpu"
         case .tools: return "wrench.and.screwdriver"
         case .mcpServers: return "puzzlepiece.extension"
         case .gateway: return "antenna.radiowaves.left.and.right"

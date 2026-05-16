@@ -34,6 +34,10 @@ struct ProjectDetailView: View {
     /// decide whether to re-parse — cheap when the file is unchanged,
     /// and the poll only runs while the view is visible.
     @State private var lastDashboardMtime: Date?
+    /// Resolved name of the project's bound model preset, or nil when
+    /// the project inherits the global default. Read-only on iOS in
+    /// v1 — Mac CRUD writes the binding; iOS just surfaces the name.
+    @State private var modelPresetName: String?
 
     enum DetailTab: Hashable {
         case dashboard, site, sessions, kanban
@@ -64,6 +68,10 @@ struct ProjectDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if let modelPresetName,
+               capabilitiesStore?.capabilities.hasACPSetSessionModel ?? false {
+                modelBadge(modelPresetName)
+            }
             tabPicker
                 .padding(.horizontal)
                 .padding(.top, 8)
@@ -87,6 +95,7 @@ struct ProjectDetailView: View {
         }
         .task(id: project.id) { await loadDashboard() }
         .task(id: project.id) { await pollDashboardMtime() }
+        .task(id: project.id) { await loadModelPresetName() }
         .refreshable { await loadDashboard() }
         .onChange(of: visibleTabs) { _, newTabs in
             // If the user was on Site and a refresh removed the
@@ -162,6 +171,48 @@ struct ProjectDetailView: View {
                 Task { await loadDashboard() }
             }
         }
+    }
+
+    // MARK: - Model badge
+
+    /// Compact "Model: <preset name>" line surfaced above the tab
+    /// picker. Read-only on iOS v1 — Mac owns the CRUD + binding.
+    @ViewBuilder
+    private func modelBadge(_ name: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "cpu")
+                .font(.caption)
+                .foregroundStyle(ScarfColor.info)
+            Text("Model: \(name)")
+                .font(.caption)
+                .foregroundStyle(ScarfColor.info)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer()
+        }
+        .padding(.horizontal)
+        .padding(.top, 6)
+    }
+
+    /// Resolve the project's bound model preset name, off-MainActor.
+    /// Two reads: project manifest (to get the preset id) → preset
+    /// store (to map id → name). Both are tiny JSON files and the
+    /// task only runs on project change. Sets `modelPresetName` to
+    /// nil when no binding exists or the bound preset has been
+    /// deleted on the remote.
+    private func loadModelPresetName() async {
+        let ctx = serverContext
+        let path = project.path
+        let name: String? = await Task.detached(priority: .utility) {
+            let reader = ProjectModelPresetReader(context: ctx)
+            guard let idString = reader.presetID(forProjectPath: path),
+                  let uuid = UUID(uuidString: idString)
+            else { return nil }
+            let service = ModelPresetService(context: ctx)
+            let preset = try? await service.get(id: uuid)
+            return preset?.name
+        }.value
+        self.modelPresetName = name
     }
 
     // MARK: - Loading

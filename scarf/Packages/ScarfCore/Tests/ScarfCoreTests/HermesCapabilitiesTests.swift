@@ -113,6 +113,7 @@ import Foundation
         #expect(caps.hasXAIVoiceCloning)
         #expect(caps.hasVideoAnalyze)
         #expect(caps.hasTransformLLMOutputHook)
+        #expect(caps.hasACPSetSessionModel)
     }
 
     @Test func v012FlagsAllOn() {
@@ -151,6 +152,7 @@ import Foundation
         #expect(!caps.hasImageGenModel)
         #expect(!caps.hasDisplayLanguage)
         #expect(!caps.hasXAIVoiceCloning)
+        #expect(!caps.hasACPSetSessionModel)
     }
 
     @Test func v011FlagsAllOff() {

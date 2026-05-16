@@ -31,6 +31,11 @@ struct ProjectsSidebar: View {
     let onRename: (ProjectEntry) -> Void
     let onMoveToFolder: (ProjectEntry) -> Void
     let onAddProject: () -> Void
+    /// Open the model-preset binding sheet for a project. Caller gates
+    /// the menu item on `HermesCapabilities.hasACPSetSessionModel` so
+    /// pre-v0.13 hosts don't see an option that wouldn't apply at
+    /// runtime. Nil disables the menu item entirely.
+    let onSetModel: ((ProjectEntry) -> Void)?
 
     /// Per-view UI state — filter text, show-archived toggle, and
     /// which folders are expanded. Folder expansion defaults to all
@@ -173,6 +178,13 @@ struct ProjectsSidebar: View {
             Button("Configuration…", systemImage: "slider.horizontal.3") {
                 onConfigure(project)
             }
+            Divider()
+        }
+        if let onSetModel {
+            Button("Set Model…", systemImage: "cpu") {
+                onSetModel(project)
+            }
+            .accessibilityIdentifier("projects.contextMenu.setModel")
             Divider()
         }
         Button("Rename…", systemImage: "pencil") { onRename(project) }

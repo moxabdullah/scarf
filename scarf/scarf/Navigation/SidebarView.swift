@@ -48,6 +48,16 @@ struct SidebarView: View {
 
         let manage: [SidebarSection] = [.tools, .mcpServers, .gateway, .cron, .health, .logs, .settings]
 
+        // Models entry sits in Configure when the host supports the
+        // session/set_model RPC (v0.13+). Pre-v0.13 the binding can be
+        // stored but never applied at runtime, so the surface stays
+        // hidden — same posture every other capability-gated entry
+        // takes.
+        var configure: [SidebarSection] = [.platforms, .personalities, .quickCommands, .credentialPools, .plugins, .webhooks, .profiles]
+        if caps?.hasACPSetSessionModel ?? false {
+            configure.append(.models)
+        }
+
         return [
             // Projects sits first now — promoting it to a first-class
             // entry point reflects how users actually open Scarf
@@ -55,7 +65,7 @@ struct SidebarView: View {
             Section(title: "Projects", items: [.projects]),
             Section(title: "Monitor",  items: monitor),
             Section(title: "Interact", items: interact),
-            Section(title: "Configure", items: [.platforms, .personalities, .quickCommands, .credentialPools, .plugins, .webhooks, .profiles]),
+            Section(title: "Configure", items: configure),
             Section(title: "Manage",   items: manage),
         ]
     }

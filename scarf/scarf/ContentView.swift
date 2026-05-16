@@ -70,6 +70,7 @@ struct ContentView: View {
         case .plugins:          PluginsView(context: serverContext)
         case .webhooks:         WebhooksView(context: serverContext)
         case .profiles:         ProfilesView(context: serverContext)
+        case .models:           ModelPresetsView(context: serverContext)
         case .tools:            ToolsView(context: serverContext)
         case .mcpServers:       MCPServersView(context: serverContext)
         case .gateway:          GatewayView(context: serverContext)

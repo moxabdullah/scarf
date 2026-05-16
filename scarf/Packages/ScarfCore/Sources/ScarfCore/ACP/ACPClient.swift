@@ -367,6 +367,25 @@ public actor ACPClient {
         statusMessage = "Cancelled"
     }
 
+    /// Switch the model on a live ACP session via the `session/set_model`
+    /// JSON-RPC method. Hermes re-derives the provider from `modelID`
+    /// internally (see `_resolve_model_selection` in
+    /// `acp_adapter/server.py`), so we only need to pass the model name.
+    ///
+    /// Used both at session boot (immediately after `newSession` to apply
+    /// a project's bound preset before the user's first prompt) and at
+    /// user-tap time from the chat header to swap mid-conversation. The
+    /// caller is responsible for capability-gating on
+    /// `HermesCapabilities.hasACPSetSessionModel` — calling this against
+    /// a pre-v0.13 host throws because the method doesn't exist.
+    public func setSessionModel(sessionId: String, modelID: String) async throws {
+        let params: [String: AnyCodable] = [
+            "sessionId": AnyCodable(sessionId),
+            "modelId": AnyCodable(modelID),
+        ]
+        _ = try await sendRequest(method: "session/set_model", params: params)
+    }
+
     public func respondToPermission(requestId: Int, optionId: String) async {
         let response: [String: Any] = [
             "jsonrpc": "2.0",

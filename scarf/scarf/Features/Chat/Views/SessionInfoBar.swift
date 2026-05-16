@@ -52,6 +52,20 @@ struct SessionInfoBar: View {
     /// `KanbanHandoff` to `AppCoordinator`. Nil hides the chip.
     var onOpenKanban: (() -> Void)? = nil
 
+    /// Model preset currently applied to the session via
+    /// `session/set_model` (or nil when the session is running on the
+    /// config.yaml default). Drives the model badge in the bar — tap
+    /// opens a popover with the preset list. Capability-gated by the
+    /// chip itself on `capabilities.hasACPSetSessionModel`.
+    var modelPreset: ModelPreset? = nil
+
+    /// Mid-chat model switch handler. Tap on the model badge presents
+    /// the preset popover; selecting a preset (or "Use global default"
+    /// — encoded as `nil`) fires this callback. Nil hides the popover
+    /// entirely, so the badge stays read-only on pre-v0.13 hosts or
+    /// when the caller doesn't wire it.
+    var onSwitchModel: ((ModelPreset?) -> Void)? = nil
+
     /// Active Hermes profile name (issue #50). Resolved on each body
     /// re-evaluation; the resolver caches for 5s so this is cheap.
     /// Chip renders only when not "default" so existing (non-profile)
@@ -117,6 +131,19 @@ struct SessionInfoBar: View {
                             Button("Clear goal", role: .destructive, action: onClearGoal)
                         }
                     }
+                }
+
+                // Model badge — renders the active preset name when
+                // session/set_model was used to override the global
+                // default. Tap opens a popover for mid-chat switching.
+                // Capability-gated on `hasACPSetSessionModel` so
+                // pre-v0.13 hosts neither see a stale chip nor get a
+                // popover that wouldn't actually switch the session.
+                if capabilities.hasACPSetSessionModel, modelPreset != nil || onSwitchModel != nil {
+                    ChatModelBadge(
+                        preset: modelPreset,
+                        onSwitch: onSwitchModel
+                    )
                 }
 
                 // Kanban chip — renders only when (a) the host supports

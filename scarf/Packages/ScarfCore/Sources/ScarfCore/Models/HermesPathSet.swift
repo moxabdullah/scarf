@@ -104,6 +104,11 @@ public struct HermesPathSet: Sendable, Hashable {
     /// JSON, scarf-owned, survives offline runs so the catalog browser
     /// still has something to render. Wiped by a Hermes home reset.
     public nonisolated var catalogCache: String { scarfDir + "/catalog_cache.json" }
+    /// User-saved model presets. Scarf-owned; Hermes never touches this
+    /// file. Read by `ModelPresetService`, applied at ACP session boot
+    /// via `session/set_model` and at `hermes -z` invocation via
+    /// `-m`/`--provider` flags.
+    public nonisolated var modelPresetsJSON: String { scarfDir + "/model_presets.json" }
     public nonisolated var mcpTokensDir: String { home + "/mcp-tokens" }
 
     // MARK: - Binary resolution

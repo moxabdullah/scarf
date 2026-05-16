@@ -177,6 +177,38 @@ v0.10.0 introduced the **Tool Gateway** — paid Nous Portal subscribers route w
 
 **Keep `ModelCatalogService.demotedProviders` in sync** with the deprioritized-provider list in `hermes-agent/hermes_cli/providers.py`. Drift means Vercel AI Gateway (or any future demoted provider) sorts in the wrong position in Scarf's picker.
 
+## Model Presets
+
+Lightweight Scarf-owned overlay that lets users save named model+provider presets and bind one to a project (or switch live mid-chat). Sits alongside the global `config.yaml` default — projects without a binding inherit unchanged.
+
+**Data model.** A `ModelPreset` is `{id: UUID, name, modelID, providerID, notes?, createdAt, updatedAt}` ([scarf/Packages/ScarfCore/Sources/ScarfCore/Models/ModelPreset.swift](scarf/Packages/ScarfCore/Sources/ScarfCore/Models/ModelPreset.swift)). Records live in `~/.hermes/scarf/model_presets.json` under a versioned `ModelPresetStore` envelope — mirrors `SessionProjectMap`'s file shape. New `HermesPathSet.modelPresetsJSON` keeps the path centralized.
+
+**Service.** [ModelPresetService](scarf/Packages/ScarfCore/Sources/ScarfCore/Services/ModelPresetService.swift) is a Sendable `actor` in ScarfCore — pure file I/O (`list/get/upsert/delete`). Missing file → empty list (not an error); corrupt JSON throws `ModelPresetServiceError.corruptStore` so the UI can show a real diagnostic. Every method dispatches through `Task.detached(priority: .utility)` so MainActor stays off the read path.
+
+**Per-project binding.** `ProjectTemplateManifest` gains an optional `modelPresetID: String?` field (UUID-as-string) at `<project>/.scarf/manifest.json`. Bound by **id**, not name — renames don't break bindings. The Mac-side writer is [ProjectModelPresetBinding](scarf/scarf/Core/Services/ProjectModelPresetBinding.swift), which mirrors `KanbanTenantResolver.persist` exactly (bare-project sentinel manifest creation, idempotent rebinds skip writes). The cross-platform read-only counterpart is [ProjectModelPresetReader](scarf/Packages/ScarfCore/Sources/ScarfCore/Services/ProjectModelPresetReader.swift) — iOS uses this projection without linking the full manifest model.
+
+**Application — primary surface is the ACP `session/set_model` RPC, not env vars.** Pre-coding verification showed `HERMES_INFERENCE_MODEL` is only read by `oneshot.py` for `-z` mode; ACP's `_make_agent` in `acp_adapter/session.py` reads model from kwargs → falls back to `config.yaml`'s `model.default` without consulting env. The env-var path would have silently no-op'd. Instead, immediately after `client.newSession(cwd:)` returns a sessionId in `ChatViewModel.startACPSession`, the new helper `applyProjectModelPreset(client:sessionId:projectPath:)` resolves the project binding → looks up the preset → calls `ACPClient.setSessionModel(sessionId:modelID:)` (which wraps the `session/set_model` JSON-RPC method, payload `{sessionId, modelId}`) BEFORE unlocking the prompt. From the user's perspective the chat boots on the chosen model. Provider is re-derived server-side by `_resolve_model_selection`. All non-fatal: missing preset, RPC error, pre-v0.13 host → silent fallback to `config.yaml` default with a logger.info trail.
+
+**Mid-chat switcher.** `ChatModelBadge` in the chat header (rendered by `SessionInfoBar`) shows the active preset name or "Default". Tap opens a popover listing every preset + "Use global default" — tapping a row fires `ChatViewModel.switchModelPreset(_:)` which calls `setSessionModel` against the live session. Optimistic UI: badge flips immediately, reverts on RPC failure with an inline banner. "Use global default" mid-chat resolves the config.yaml model name and sends that (Hermes has no "clear override" verb on `session/set_model`).
+
+**Capability gating.** Single new flag `HermesCapabilities.hasACPSetSessionModel` (>= v0.13.0 — verified against `acp/schema.py: SetSessionModelRequest`). Pre-v0.13 hosts hide:
+- The `.models` Models sidebar entry in the Configure section
+- The "Set Model…" context-menu item in `ProjectsSidebar`
+- The `ChatModelBadge` in `SessionInfoBar`
+- The "Model: …" line on iOS `ProjectDetailView`
+
+Existing global-model behaviour stays unchanged when no binding is set, so v0.12 users on Scarf are unaffected.
+
+**CRUD UI (Mac).** [ModelPresetsView](scarf/scarf/Features/Models/Views/ModelPresetsView.swift) is the sidebar destination — list with per-row usage count (count of projects binding each preset), edit / delete actions, "in use" warning in the destructive confirm dialog. [ModelPresetEditSheet](scarf/scarf/Features/Models/Views/ModelPresetEditSheet.swift) reuses the existing `ModelPickerRow` (Settings → General's catalog-backed picker) for the model + provider field, so any provider mirrored in `ModelCatalogService` is bindable as a preset. [ModelPresetsViewModel](scarf/scarf/Features/Models/ViewModels/ModelPresetsViewModel.swift) snapshots presets + usage counts; counting walks `ProjectDashboardService.loadRegistry()` once per refresh — `O(projects)`, fine for typical counts.
+
+**Per-project picker (Mac).** [ProjectModelPresetSheet](scarf/scarf/Features/Models/Views/ProjectModelPresetSheet.swift) presents from the project list's context-menu "Set Model…" action (added to `ProjectsSidebar` as a new `onSetModel` callback, capability-gated by `ProjectsView`). Reads the current binding from manifest, lets user pick "Use global default" or any saved preset, writes back via `ProjectModelPresetBinding`.
+
+**iOS surface.** Read-only — [ProjectDetailView](Scarf%20iOS/Projects/ProjectDetailView.swift) shows a compact "Model: <preset name>" line above the tab picker when a binding exists. iOS doesn't get preset CRUD or per-project re-binding in v1 (Mac-only); the resolved name is fetched via `ProjectModelPresetReader` + `ModelPresetService.get(id:)` off MainActor.
+
+**Cron per-job override — deferred.** `hermes cron create` / `hermes cron edit` don't accept `--model` flags (verified against v0.13.0 CLI). The top-level `hermes -m` only applies to `-z`/`--tui`, not to cron. The `HermesCronJob.model: String?` data field exists but the CLI write path doesn't. Surfacing a per-cron picker would require a Hermes-side flag addition; revisit when that lands.
+
+**Don't:** invent a new env-var injection in `ACPClient+Mac.swift` — Hermes's ACP session-create path doesn't consult `HERMES_INFERENCE_MODEL`, so it'd silently no-op. Don't pass `-m` to `hermes acp` as a subcommand flag — it's a top-level flag and ACP doesn't accept it (verified via `hermes acp --help`). Don't bind by preset name — renames break references. Don't try to "clear" a session model via the RPC; resolve the config.yaml default and pass that instead.
+
 ## Kanban v3: drag-and-drop board + per-project tenants (v2.7.5)
 
 Scarf v2.7.5 promotes Kanban from a read-only list to a full board with drag-and-drop, every Hermes write verb wired up, and per-project boards bound to a Scarf-minted tenant slug. The list view is preserved as a `Board | List` toggle for accessibility / narrow-window fallback.

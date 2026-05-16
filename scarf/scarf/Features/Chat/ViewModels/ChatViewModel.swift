@@ -144,6 +144,13 @@ final class ChatViewModel {
     /// registry (project was removed after the session was attributed).
     private(set) var currentProjectName: String?
 
+    /// Model preset applied to the live session via `session/set_model`,
+    /// or nil when the chat is running on the global `config.yaml`
+    /// default. Set after `applyProjectModelPreset` succeeds at session
+    /// boot and updated by the chat header's mid-chat switcher. The
+    /// chat header reads this to render the active-model badge.
+    private(set) var currentModelPreset: ModelPreset?
+
     /// True when the user just sent `/goal` against a host whose `cli`
     /// platform_toolsets list lacks `kanban`. The view binds a `.sheet`
     /// to this flag and surfaces the one-time onboarding explanation
@@ -715,6 +722,112 @@ final class ChatViewModel {
 
     // MARK: - ACP Session Management
 
+    /// Mid-chat model switch. Wired to the chat header badge's
+    /// popover. Passing `nil` reverts the session to the config.yaml
+    /// default — except Hermes has no "clear override" verb on
+    /// `session/set_model`, so we resolve the global default model
+    /// name from `config.yaml` and pass that, then drop the local
+    /// `currentModelPreset` so the badge shows "Default".
+    ///
+    /// Non-fatal: any failure logs + restores the previous preset
+    /// state (no UI bounce because we update optimistically and only
+    /// revert on failure).
+    func switchModelPreset(_ preset: ModelPreset?) {
+        guard let client = acpClient,
+              let sessionId = richChatViewModel.sessionId
+        else { return }
+        let previous = currentModelPreset
+        // Optimistic update — badge flips immediately.
+        currentModelPreset = preset
+
+        let targetModelID: String
+        if let preset {
+            targetModelID = preset.modelID
+        } else {
+            // Resolve the config.yaml default. Empty fallback keeps
+            // the RPC from blowing up — Hermes treats an empty model
+            // as "leave alone", which is the safe no-op.
+            let config = fileService.loadConfig()
+            targetModelID = config.model
+        }
+
+        Task { @MainActor [weak self] in
+            do {
+                try await client.setSessionModel(
+                    sessionId: sessionId,
+                    modelID: targetModelID
+                )
+                self?.logger.info("mid-chat model switch to \(targetModelID) succeeded")
+            } catch {
+                self?.logger.warning("mid-chat model switch failed: \(error.localizedDescription)")
+                self?.currentModelPreset = previous
+                self?.acpError = "Couldn't switch model: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Apply the project's bound model preset to a live ACP session.
+    /// Resolves the binding from `<project>/.scarf/manifest.json` →
+    /// looks up the preset by UUID in `~/.hermes/scarf/model_presets.json`
+    /// → issues `session/set_model` if the host supports it.
+    ///
+    /// Non-fatal at every step:
+    /// - No binding → silent no-op (use global default).
+    /// - Bound id but preset deleted → log + currentModelPreset stays nil.
+    /// - Pre-v0.13 host (no `set_session_model` RPC) → log + skip.
+    /// - RPC error → log + currentModelPreset stays nil; session keeps
+    ///   the config.yaml default.
+    ///
+    /// On success, `currentModelPreset` carries the applied preset so
+    /// the chat header badge can display the active model. Read once at
+    /// session boot — mid-chat switches go through a dedicated entry
+    /// point.
+    private func applyProjectModelPreset(
+        client: ACPClient,
+        sessionId: String,
+        projectPath: String
+    ) async {
+        let reader = ProjectModelPresetReader(context: context)
+        guard let idString = reader.presetID(forProjectPath: projectPath),
+              let presetID = UUID(uuidString: idString)
+        else {
+            currentModelPreset = nil
+            return
+        }
+
+        let service = ModelPresetService(context: context)
+        let preset: ModelPreset?
+        do {
+            preset = try await service.get(id: presetID)
+        } catch {
+            logger.warning("couldn't load model preset \(idString): \(error.localizedDescription)")
+            currentModelPreset = nil
+            return
+        }
+
+        guard let preset else {
+            logger.info("project '\(projectPath)' references deleted preset \(idString) — falling back to global default")
+            currentModelPreset = nil
+            return
+        }
+
+        let caps = capabilitiesStore?.capabilities ?? .empty
+        guard caps.hasACPSetSessionModel else {
+            logger.info("host doesn't support session/set_model (pre-v0.13) — preset '\(preset.name)' bound but not applied")
+            currentModelPreset = nil
+            return
+        }
+
+        do {
+            try await client.setSessionModel(sessionId: sessionId, modelID: preset.modelID)
+            currentModelPreset = preset
+            logger.info("applied model preset '\(preset.name)' (\(preset.modelID)) to session \(sessionId)")
+        } catch {
+            logger.warning("session/set_model failed for preset '\(preset.name)': \(error.localizedDescription) — session stays on config.yaml default")
+            currentModelPreset = nil
+        }
+    }
+
     private func startACPSession(
         resume sessionId: String?,
         projectPath: String? = nil,
@@ -831,6 +944,20 @@ final class ChatViewModel {
                 } else {
                     acpStatus = ACPPhase.creatingSession
                     resolvedSessionId = try await client.newSession(cwd: cwd)
+                }
+
+                // Apply the project's bound model preset before unlocking
+                // the prompt. Non-fatal — falls back to the config.yaml
+                // default on any failure (missing preset, pre-v0.13 host,
+                // RPC error). Runs after both new and resumed sessions so
+                // a project's preset survives a reconnect into the same
+                // chat. No-op when no projectPath was passed.
+                if let projectPath {
+                    await applyProjectModelPreset(
+                        client: client,
+                        sessionId: resolvedSessionId,
+                        projectPath: projectPath
+                    )
                 }
 
                 richChatViewModel.setSessionId(resolvedSessionId)
