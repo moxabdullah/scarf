@@ -19,66 +19,70 @@
   <a href="https://www.buymeacoffee.com/awizemann"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="28"></a>
 </p>
 
-## What's New in 2.8
+## What's New in 2.9
 
-A coordinated catch-up to **Hermes v0.13.0** ("The Tenacity Release"). v2.8 lights up every v0.13 surface across the app — Persistent Goals, ACP `/queue`, Kanban hallucination-gate + diagnostics, Curator archive/prune, Google Chat as the 20th gateway platform, cross-platform allowlists, MCP SSE transport, Cron `--no-agent` watchdog mode, per-capability Web Tools backends, and a refreshed provider catalog with five new models. 22 new capability flags gate every surface; pre-v0.13 hosts render byte-identical to v2.7.5.
+A coordinated catch-up to **Hermes v0.14.0** ("The Foundation Release"). v2.9 surfaces every Scarf-relevant feature from the v0.14 wave — the new `/subgoal`/`/yolo`/`/sessions`/`/codex-runtime` slash commands, two new inference providers (xAI Grok OAuth + NovitaAI), two new gateway platforms (LINE + SimpleX Chat), two new web-search backends (Brave Search + DuckDuckGo), the OpenAI-compatible **Hermes Proxy** local server, ACP browser-tools setup, a YOLO mode warning banner, the Alibaba → Qwen Cloud display rename, and a stack of smaller settings/MCP/plugin additions. 24 new capability flags gate every surface; pre-v0.14 hosts render byte-identical to v2.8.0.
 
-### Persistent Goals + ACP `/queue`
+### `/subgoal` and three new chat-config slash commands
 
-- **`/goal <text>`** — locks the agent on a target that survives across turns. Surfaced as an `info`-tinted "Goal locked: …" pill in the chat header with a Clear context-menu item that dispatches `/goal --clear`. Optimistic local mirror — Hermes is the authoritative owner; Scarf paints the pill the moment you send `/goal …`.
-- **`/queue <text>`** — queues a prompt to run after the current turn completes. Header chip shows the queued count; tap opens a popover listing prompts + relative timestamps. The `/steer` slash command (existing v0.11 surface) now runs as a regular prompt on idle sessions in v0.13 (Scarf greys it only on pre-v0.13 hosts).
-- **Static slash-menu fallbacks** — pre-session, the menu surfaces `/new` (with optional `[<name>]` argument hint on v0.13). Active-session fallbacks (`/clear`, `/compact`, `/cost`, `/model`, `/tools`, `/reload-skills`, `/help`, `/exit`) round out resumed sessions where Hermes ACP doesn't re-emit `available_commands_update` after `session/load`. Deduped against the ACP-advertised set so the canonical entry always wins.
+- **`/subgoal <text>`** — layers extra success criteria onto an active `/goal` loop. Forms: `<text>` (add), `remove N` (drop the Nth), `clear` (empty the list). Optimistic local mirror on `RichChatViewModel.activeSubgoals`; the goal pill in the chat header gains a `+N` count badge with the full list in the hover tooltip.
+- **`/yolo`** — toggles dangerous-command auto-approval (`approvals.mode = yolo`) without leaving chat. Pairs with a new amber **YOLO** warning badge in the chat header so the state is always visible.
+- **`/sessions`** — browse and resume prior sessions inline.
+- **`/codex-runtime [auto|codex_app_server]`** — toggle the Codex app-server runtime for OpenAI/Codex models.
+- **`/handoff` intentionally NOT in the ACP menu** — verified against Hermes's command catalog: v0.14's `/handoff <platform>` is `cli_only` and hands a session to a messaging platform (Telegram/Discord/etc.), not to a different model. Mid-chat model switching keeps using the existing `session/set_model` RPC via the chat-header model badge.
 
-### Kanban v0.13 — hallucination gate, diagnostics engine, recovery UX
+### Hermes Proxy — OpenAI-compatible local server
 
-- **Hallucination-gate verify / reject** — worker-created cards land with `hallucination_gate_status: pending`. The inspector renders a yellow banner ("Created by a worker — verify before running") with Verify and Reject buttons. Cards in pending state dim 0.6 with a yellow ⚠ glyph in the title row.
-- **Diagnostics rendering** — typed-mirror enum `KanbanDiagnosticKind` with severity (info / warning / critical). Per-task and per-run diagnostics surface in the inspector Runs tab as chip-lists. Auto-block reasons render verbatim in the existing red banner; darwin zombie detections show as a distinct kind.
-- **Per-task `max_retries`** — added to the create sheet (default 3) and shown as a header chip in the inspector. Write-once at create time, matching Hermes's pattern.
-- **Multiline title/body** — the create sheet's Title field accepts multiline input, capped to four visible rows.
-- Tolerant decoding everywhere — every new field uses `decodeIfPresent`; pre-v0.13 hosts parse cleanly and render the v2.7.5 board surface unchanged.
+- New **Configure → Hermes Proxy** sidebar destination (capability-gated on `hasHermesProxy`).
+- Wraps `hermes proxy start --provider <p> --host 127.0.0.1 --port 8645`. The new [`HermesProxyService`](https://github.com/awizemann/scarf/blob/main/scarf/scarf/Core/Services/HermesProxyService.swift) (`@MainActor @Observable`) owns the long-running child process, drains stderr into a 200-line capped log buffer, and probes `hermes proxy providers` for the adapter list.
+- Status card with running/stopped badge, endpoint URL with copy button, provider picker, Start/Stop controls, live log tail with auto-scroll, and a usage-help card. v0.14 ships with `nous` as the only adapter; the picker auto-refreshes when more land.
+- Point any OpenAI-compatible client (Codex CLI, Aider, Cline, VS Code Continue) at `http://127.0.0.1:8645/v1` — the proxy attaches your Hermes-managed credentials so any bearer token in the client is accepted.
+- Local server only in v2.9 (SSH hosts would need port-forward wiring); the panel shows an explanatory notice on non-local contexts.
 
-### Curator archive + prune
+### Two new inference providers + Alibaba → Qwen Cloud rename
 
-- **Archived skills section** in `CuratorView` showing `hermes curator list-archived`. Each row exposes Restore (returns to the active leaderboard) and Prune (destructive — opens a custom confirm sheet matching the template-uninstall pattern, with `ScarfDestructiveButton` "Prune permanently" and Cancel as the default keyboard action).
-- **Bulk prune** with an enumerated confirm list before a single-tap destructive action.
-- **Synchronous "Run Now"** — v0.13 `hermes curator run` blocks until done. The Run Now button shows a progress affordance for the duration; pre-v0.13 falls back to fire-and-forget.
-- New `CuratorService` actor in ScarfCore mirroring `KanbanService`'s shape, with defensive `--json` retry-without-flag fallback for verbs that may not support it on all v0.13 patch releases.
+- **xAI Grok (SuperGrok subscription)** — overlay-only OAuth provider. Wire ID `xai-oauth` (canonical; `x-ai-oauth` / `grok-oauth` / `xai-grok-oauth` are accepted aliases). Subscription-gated; surfaces in the Models picker with the "Subscription" pill alongside Nous Portal.
+- **NovitaAI** — API-key overlay provider, wire ID `novita`.
+- **Alibaba Cloud → Qwen Cloud display rename** — provider wire ID stays `alibaba` so existing config keys keep working. New unconditional `providerDisplayNameOverrides` map in `ModelCatalogService` flips the picker label to "Qwen Cloud" everywhere — matches what Hermes v0.14 itself prints in `hermes model`.
 
-### Messaging Gateway — Google Chat + cross-platform allowlists
+### Two new gateway platforms
 
-- **Google Chat** as the 20th platform.
-- **Cross-platform allowlist editor** — per-platform `allowed_channels` (Slack / Mattermost / Google Chat), `allowed_chats` (Telegram / WhatsApp), `allowed_rooms` (Matrix / DingTalk). New `AllowlistEditor` component plus a `GatewayConfigWriter` that handles list-block YAML mutations directly (since `hermes config set` doesn't support lists).
-- **Per-platform behavior toggles** — `busy_ack_enabled`, `gateway_restart_notification`, slash-command auto-delete TTL.
-- **`hermes gateway list` cross-profile digest** — inline status row showing which profile is running which platform across all profiles.
+- **LINE Messaging API** (21st platform, first-class native adapter) and **SimpleX Chat** (22nd platform, talks to a local `simplex-chat` daemon over WebSocket). Both auto-appear in the Platforms tab and the Tools page's "All Platforms" health roll-up since the list is data-driven.
 
-### Provider catalog refresh + Settings polish
+### Brave Search + DuckDuckGo web-search backends
 
-- **Five new models** — `deepseek/deepseek-v4-pro`, `x-ai/grok-4.3`, `openrouter/owl-alpha` (free), `tencent/hy3-preview`, `arcee/trinity-large-thinking`. `x-ai/grok-4.20-beta` → `x-ai/grok-4.20` alias-resolved at read time so existing user configs keep working without YAML rewrites. Vercel AI Gateway demoted to the bottom of the picker.
-- **`image_gen.model` honored** in `Settings → Auxiliary` with a curated picker (free-form entry also accepted).
-- **OpenRouter response caching** toggle.
-- **MCP SSE transport** with `sse_read_timeout` field, alongside stdio and HTTP.
-- **Cron `--no-agent` watchdog mode** — script-only cron jobs that skip the AI call.
-- **Web Tools per-capability backends** — separate pickers for `web_search` and `web_extract`. SearXNG appears in the search picker only.
-- **Profiles `--no-skills`** — empty-profile creation (mutually exclusive with `--clone-all`).
-- **Context compression count** chip in chat status bar, **`/new <name>`** argument hint, **`display.language`** picker (zh / ja / de / es / fr / uk / tr), **xAI Custom Voices** badge, **redaction default-flip awareness** (v0.13 server-side default is now ON).
+- The Web Tools settings tab adds **Brave Search (free tier)** (wire ID `brave-free`; honors `BRAVE_SEARCH_API_KEY` for higher quotas) and **DuckDuckGo (DDGS)** (wire ID `ddgs`; anonymous, uses the `ddgs` Python package lazy-installed on first call). The Scarf list also got a wire-accuracy pass — the stale `"duckduckgo"` / `"brave"` / `"you"` entries that never matched any real Hermes backend ID are replaced with the canonical v0.13 set (`exa`, `parallel`, `firecrawl`, `tavily`, `searxng`).
 
-### iOS read-only catch-up
+### MCP, settings, plugin additions
 
-Following the Phase H precedent, ScarfGo mirrors selected v2.8 surfaces as read-only:
-- Goal pill + queue chip in the chat header (tap = no-op; the Mac app owns mutations).
-- Kanban v0.13 diagnostics on `ScarfGoKanbanDetailSheet` — `retries: N` chip, "Worker-created — verify on Mac" hallucination badge, red `auto_blocked_reason` banner, tappable diagnostics chip-lists.
-- Curator Archived list (read-only; footer points users to the Mac app).
-- Settings → Platforms extension (Google Chat, busy-ack / restart-notification summaries with mixed-state indicator, allowlist DisclosureGroups).
-- "v0.13 features active" badge in iOS Settings with a what's-new sheet.
+- **MCP `supports_parallel_tool_calls`** — new optional flag on MCP server entries. Tri-state picker in the editor ("Default (Hermes decides)" / "Enabled" / "Disabled") writes `supports_parallel_tool_calls: <bool>` or drops the key entirely.
+- **`terminal.docker_extra_args`** — extra flags forwarded verbatim to `docker run` for the docker terminal backend. Comma-separated input; setter splits and serializes to YAML.
+- **`display.timestamps`** — per-message timestamp toggle for TUI output. (ACP-relayed chat in Scarf shows turn-duration chips independently, so this only affects the CLI.) Also fixed a pre-existing v0.13 oversight: `display.language` was in the model but the YAML parser wasn't reading it back at load.
+- **Cron `deliver=all`** — fan-out routing intent for cron jobs. Field placeholder + helper text updated on v0.14.
+- **Discord channel-history backfill** — default-on toggle for the v0.14 channel-history-read-on-join behavior; lets users opt out for noisy channels.
+- **Plugin `tool_override` badge** — plugins that declare `tool_override: true` in their manifest now render a visible badge in PluginsView so overridden built-in tools aren't a surprise.
 
-iOS write parity is deferred to v2.8.x.
+### ACP `--setup-browser` + YOLO warning
 
-### Bug fixes uncovered during v0.13.0 dogfooding
+- **"Set up browser tools" button** on the Health view header (v0.14+) runs `hermes acp --setup-browser --assume-yes` to install Chromium and provision Playwright in one shot. Inline status strip + 10-minute timeout (chromium download is slow).
+- **YOLO mode warning** — chat-header amber chip renders when `approvals.mode = yolo` and the host advertises `hasYOLOWarning`. Wired through `ChatViewModel.approvalMode`, refreshed off MainActor with the existing config diagnostics.
 
-- **Dashboard flicker on v0.13 hosts** — Hermes v0.13 writes to `state.db-wal` at ~10 Hz during gateway activity, which used to stack 5+ concurrent `dashboardSnapshot` calls and surface as `BackendError error 3`. Fixed via file-watcher coalescing (500 ms quiet floor + 1.5 s max-wait safeguard so coincident `gateway_state.json` Start/Stop touches can't be starved) plus dashboard load dedupe.
-- **Sparse slash menu on resumed sessions** — Hermes ACP only emits `available_commands_update` after `session/new`, not after `session/load`. Combined with `RichChatViewModel.reset()` clearing `acpCommands` on every session switch, resumed sessions landed at a 4-command fallback. Fixed by preserving `acpCommands` across reset (they're agent-level, not session-level) plus the static fallback set noted above.
+### Performance + reliability fixes (post-v2.8.0)
 
-See the full [v2.8.0 release notes](https://github.com/awizemann/scarf/releases/tag/v2.8.0) for the complete list, including the v2.7 highlights (skeleton-then-hydrate chat + Activity loaders, SSH cancellation propagation, in-flight coalescing, New Project from Scratch wizard, Cron + Keychain mirroring, the ScarfMon perf harness, five dashboard widget types) which are all still in play.
+Bundled in v2.9 alongside the v0.14 surface:
+
+- **Per-project model presets + mid-chat switcher** — save named model+provider presets, bind one to a project, or switch live via a popover from the chat-header model badge. Capability-gated on `hasACPSetSessionModel` (v0.13+).
+- **Kanban toolset enable** — direct YAML write with detector-based verification (the v2.8 CLI flow had a regression that didn't persist correctly).
+- **MetricKit crash + hang diagnostics** — Scarf-iOS persists MetricKit reports across launches so post-mortems work after a TestFlight crash.
+- **JSON read caps** — session-attribution and project-dashboard JSON reads now bound input to defend against pathological files.
+- **Scroll crash + background-lifecycle hardening** — eliminates a scroll-view crash and tightens behavior when the app suspends mid-chat.
+- **Selectable text across paragraphs** in chat transcript ([#93](https://github.com/awizemann/scarf/issues/93)).
+- **Process pipe draining** for large Kanban outputs ([#95](https://github.com/awizemann/scarf/issues/95)).
+- **Transcript render perf** — chat scrolls faster on long conversations; cron filter + two-stage load-earlier.
+- **iOS slash command parity** — iOS chat now sees the same slash menu as Mac, plus four TestFlight-reported fixes.
+- **`/steer` honesty** — the slash menu no longer surfaces `/steer` pre-session (you can't nudge an agent that isn't running).
+
+See the full [v2.9.0 release notes](https://github.com/awizemann/scarf/releases/tag/v2.9.0) for the complete list, including the v2.8 highlights (Persistent Goals, ACP `/queue`, Kanban v0.13 diagnostics, Curator archive/prune, Google Chat, cross-platform allowlists, MCP SSE, Cron `--no-agent`, per-capability Web Tools backends, `display.language`, xAI Custom Voices) and v2.7 highlights (skeleton-then-hydrate chat + Activity loaders, SSH cancellation propagation, ScarfMon perf harness) which are all still in play.
 
 **Previous releases:** see the [Release Notes Index](https://github.com/awizemann/scarf/wiki/Release-Notes-Index) on the wiki for v2.7, v2.6, v2.5, v2.3, v2.2, v2.0, v1.6, and earlier.
 
@@ -166,6 +170,7 @@ Scarf mirrors Hermes's surface area through a sidebar-based UI. Sections below m
 - **Plugins** — Install via Git URL or `owner/repo`, update, remove, enable/disable. Reads `~/.hermes/plugins/` directly for reliable state
 - **Webhooks** — Create, list, test-fire, and remove webhook subscriptions. Detects the "platform not enabled" state and links to gateway setup
 - **Profiles** — Switch between multiple isolated Hermes instances. Create, rename, delete, export (zip), import. Safe-switch warning reminds users to restart Scarf after activating a different profile
+- **Hermes Proxy** *(new in 2.9, Hermes v0.14+)* — Launch the OpenAI-compatible local proxy that forwards requests to your OAuth-authenticated upstream provider (Nous Portal in v0.14; more adapters as Hermes adds them). Status card with running/stopped badge, endpoint URL with copy button (`http://127.0.0.1:8645/v1`), provider picker, live log tail, and a usage-help card. Point Codex CLI / Aider / Cline / VS Code Continue at the endpoint and any bearer token works — the proxy attaches your real credential
 
 ### Manage
 
@@ -191,7 +196,7 @@ Custom, agent-generated dashboards for any project. Define stat boxes, charts, t
 - macOS 14.6+ (Sonoma) for Scarf
 - iOS 18.0+ for [ScarfGo](https://github.com/awizemann/scarf/wiki/ScarfGo) (the iPhone companion, public TestFlight from v2.5)
 - Xcode 16.0+ to build from source
-- [Hermes agent](https://github.com/hermes-ai/hermes-agent) v0.6.0+ installed at `~/.hermes/` on each target host (v0.13.0+ recommended for full v2.8 feature support — Persistent Goals, ACP `/queue`, Kanban hallucination gate + diagnostics + per-task max_retries, Curator archive/prune + sync `run`, Google Chat as 20th platform, cross-platform allowlists, MCP SSE transport, Cron `--no-agent`, Web Tools per-capability backends, Profiles `--no-skills`, 5 new models, `image_gen.model`, OpenRouter response caching, `display.language`, xAI Custom Voices)
+- [Hermes agent](https://github.com/hermes-ai/hermes-agent) v0.6.0+ installed at `~/.hermes/` on each target host (v0.14.0+ recommended for full v2.9 feature support — `/subgoal` / `/yolo` / `/sessions` / `/codex-runtime` slash commands, xAI Grok OAuth + NovitaAI providers, LINE + SimpleX Chat platforms, Brave Search + DuckDuckGo web-search backends, MCP `supports_parallel_tool_calls`, Hermes Proxy local server, ACP `--setup-browser`, YOLO mode warning, Alibaba → Qwen Cloud display rename, `docker_extra_args`, `display.timestamps`, Cron `deliver=all`, Discord channel-history backfill, plugin `tool_override` badge, cross-session 1h Claude prefix cache. v0.13.0 still works for the v2.8 surface — Persistent Goals, ACP `/queue`, Kanban hallucination gate + diagnostics, Curator archive/prune, Google Chat, MCP SSE, etc.)
 - For remote servers: SSH access (key-based), `sqlite3` on the remote (for atomic DB snapshots), and the `hermes` CLI resolvable from the remote user's `PATH` or at a path you specify per server. ScarfGo requires the same on every Hermes host it connects to.
 
 ### Compatibility
@@ -207,9 +212,10 @@ Scarf reads Hermes's SQLite database and parses CLI output from `hermes status`,
 | v0.10.0 (2026-04-16) | Verified (Tool Gateway introduced) |
 | v0.11.0 (2026-04-23) | Verified |
 | v0.12.0 (2026-04-30) | Verified |
-| v0.13.0 (2026-05-07) | **Verified — current target (recommended for full v2.8 feature support)** |
+| v0.13.0 (2026-05-07) | Verified |
+| v0.14.0 (2026-05-16) | **Verified — current target (recommended for full v2.9 feature support)** |
 
-Scarf 2.8 targets Hermes v0.13.0 for Persistent Goals + the chat-header pill, ACP `/queue` slash command, Kanban v0.13 diagnostics + recovery UX (hallucination gate, per-task max_retries, multiline title, auto-block reasons, darwin zombie detection), Curator archive/prune + synchronous `run`, Google Chat as the 20th gateway platform, cross-platform allowlists + per-platform behavior toggles, `hermes gateway list` cross-profile digest, MCP SSE transport, Cron `--no-agent` watchdog mode, Web Tools per-capability backends, Profiles `--no-skills`, the 5 new models (deepseek-v4-pro, grok-4.3, owl-alpha, hy3-preview, arcee/trinity-large-thinking), `image_gen.model`, OpenRouter response caching, context compression count, `/new <name>` argument, `display.language` static-message translation (zh / ja / de / es / fr / uk / tr), and xAI Custom Voices. Every v0.13 surface is **capability-gated** — Scarf detects the host's Hermes version once per server connection (`hermes --version` → semver + `YYYY.M.D` parse) and hides v0.13-only UI on older hosts. v0.12.0 hosts keep the full v2.7.5 surface (autonomous Curator, multimodal ACP, Kanban CLI, Microsoft Teams + Yuanbao gateways, cron `--workdir`, `auxiliary.curator`, `prompt_caching.cache_ttl`, the redaction toggle, the runtime metadata footer, Piper TTS, Vercel terminal). Earlier Hermes versions remain supported for monitoring, sessions, file-based features, and ACP chat; new behavior degrades gracefully on older agents.
+Scarf 2.9 targets Hermes v0.14.0 for `/subgoal` + `/yolo` + `/sessions` + `/codex-runtime` slash commands, xAI Grok OAuth (SuperGrok) + NovitaAI overlay providers, the Alibaba → Qwen Cloud display rename, LINE + SimpleX Chat as the 21st and 22nd gateway platforms, Brave Search (free tier) + DuckDuckGo (DDGS) as web-search backends, MCP `supports_parallel_tool_calls`, Hermes Proxy as an OpenAI-compatible local server, ACP `--setup-browser` browser-tools provisioning, the YOLO mode warning chip, `terminal.docker_extra_args`, `display.timestamps`, Cron `deliver=all`, Discord channel-history backfill, and the plugin `tool_override` manifest flag. Every v0.14 surface is **capability-gated** — Scarf detects the host's Hermes version once per server connection (`hermes --version` → semver + `YYYY.M.D` parse) and hides v0.14-only UI on older hosts. v0.13.0 hosts keep the full v2.8 surface (Persistent Goals, ACP `/queue`, Kanban v0.13 diagnostics, Curator archive/prune, Google Chat, cross-platform allowlists, MCP SSE transport, Cron `--no-agent`, per-capability Web Tools backends, Profiles `--no-skills`, `display.language`, xAI Custom Voices). v0.12.0 hosts keep the full v2.7.5 surface (autonomous Curator, multimodal ACP, Kanban CLI, Microsoft Teams + Yuanbao gateways, cron `--workdir`, `auxiliary.curator`, `prompt_caching.cache_ttl`, the redaction toggle, the runtime metadata footer, Piper TTS, Vercel terminal). Earlier Hermes versions remain supported for monitoring, sessions, file-based features, and ACP chat; new behavior degrades gracefully on older agents.
 
 If a Hermes update changes the database schema or CLI output format, Scarf may need to be updated. Check the [Health](#features) view for compatibility warnings.
 
