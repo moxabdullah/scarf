@@ -773,23 +773,38 @@ final class ChatViewModel {
         currentModelPreset = preset
 
         let targetModelID: String
+        let targetProviderID: String?
         if let preset {
             targetModelID = preset.modelID
+            // Pass the preset's provider so Hermes routes through the
+            // colon-prefixed model_id wire format — without it, less-
+            // obvious model IDs (e.g. `inclusionai/ring-2.6-1t`) fall
+            // into Hermes's `detect_provider_for_model` heuristic which
+            // picks the wrong provider. See issue #97.
+            targetProviderID = preset.providerID.isEmpty ? nil : preset.providerID
         } else {
             // Resolve the config.yaml default. Empty fallback keeps
             // the RPC from blowing up — Hermes treats an empty model
             // as "leave alone", which is the safe no-op.
             let config = fileService.loadConfig()
             targetModelID = config.model
+            // Pair the default model with its configured provider so
+            // the "Use global default" mid-chat switch lands on the
+            // same provider the CLI default would. Empty / "unknown"
+            // (the YAML parser's sentinel) → nil, falling back to the
+            // bare-model wire shape.
+            let rawProvider = config.provider.trimmingCharacters(in: .whitespaces)
+            targetProviderID = (rawProvider.isEmpty || rawProvider == "unknown") ? nil : rawProvider
         }
 
         Task { @MainActor [weak self] in
             do {
                 try await client.setSessionModel(
                     sessionId: sessionId,
-                    modelID: targetModelID
+                    modelID: targetModelID,
+                    providerID: targetProviderID
                 )
-                self?.logger.info("mid-chat model switch to \(targetModelID) succeeded")
+                self?.logger.info("mid-chat model switch to \(targetModelID) (provider: \(targetProviderID ?? "auto")) succeeded")
             } catch {
                 self?.logger.warning("mid-chat model switch failed: \(error.localizedDescription)")
                 self?.currentModelPreset = previous
@@ -851,9 +866,21 @@ final class ChatViewModel {
         }
 
         do {
-            try await client.setSessionModel(sessionId: sessionId, modelID: preset.modelID)
+            // Pass providerID so the RPC uses Hermes's
+            // `<provider>:<model>` colon-encoded wire format. Without
+            // it, less-obvious model IDs (e.g. `inclusionai/ring-2.6-1t`)
+            // fall into `detect_provider_for_model` which infers wrong
+            // — see issue #97. Empty `providerID` (older presets that
+            // pre-date the providerID field) falls back to bare-model
+            // wire shape.
+            let providerHint = preset.providerID.isEmpty ? nil : preset.providerID
+            try await client.setSessionModel(
+                sessionId: sessionId,
+                modelID: preset.modelID,
+                providerID: providerHint
+            )
             currentModelPreset = preset
-            logger.info("applied model preset '\(preset.name)' (\(preset.modelID)) to session \(sessionId)")
+            logger.info("applied model preset '\(preset.name)' (\(preset.modelID), provider: \(providerHint ?? "auto")) to session \(sessionId)")
         } catch {
             logger.warning("session/set_model failed for preset '\(preset.name)': \(error.localizedDescription) — session stays on config.yaml default")
             currentModelPreset = nil

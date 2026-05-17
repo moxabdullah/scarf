@@ -392,6 +392,76 @@ import Foundation
 
     // MARK: - ACPErrorHint
 
+    // MARK: - session/set_model encoding (issue #97)
+    //
+    // Hermes's ACP adapter expects the `model_id` parameter on
+    // `session/set_model` to be colon-encoded as `<provider>:<model>`
+    // when the client knows the provider. Pre-2.9.1 Scarf sent only
+    // the bare model name; Hermes then fell into `parse_model_input`
+    // → `detect_provider_for_model` and inferred the provider from
+    // the model name string alone, which routed less-obvious IDs
+    // (like `inclusionai/ring-2.6-1t`) to the wrong provider.
+
+    @Test func encodeModelChoiceBareModelWhenProviderNil() {
+        #expect(
+            ACPClient.encodeModelChoice(modelID: "claude-opus-4-7", providerID: nil)
+                == "claude-opus-4-7"
+        )
+    }
+
+    @Test func encodeModelChoiceBareModelWhenProviderEmpty() {
+        #expect(
+            ACPClient.encodeModelChoice(modelID: "claude-opus-4-7", providerID: "")
+                == "claude-opus-4-7"
+        )
+        #expect(
+            ACPClient.encodeModelChoice(modelID: "claude-opus-4-7", providerID: "   ")
+                == "claude-opus-4-7"
+        )
+    }
+
+    @Test func encodeModelChoiceWithProviderPrefixesWithColon() {
+        // The bug-report case from issue #97 — slash-format model IDs
+        // need the provider prefix so Hermes routes through openrouter
+        // instead of guessing via detect_provider_for_model.
+        #expect(
+            ACPClient.encodeModelChoice(
+                modelID: "inclusionai/ring-2.6-1t",
+                providerID: "openrouter"
+            ) == "openrouter:inclusionai/ring-2.6-1t"
+        )
+    }
+
+    @Test func encodeModelChoiceLowercasesProvider() {
+        // Hermes's `_encode_model_choice` lower-cases the provider half;
+        // Scarf matches so a preset saved with "Anthropic" still resolves.
+        #expect(
+            ACPClient.encodeModelChoice(modelID: "claude-opus-4-7", providerID: "Anthropic")
+                == "anthropic:claude-opus-4-7"
+        )
+    }
+
+    @Test func encodeModelChoiceTrimsWhitespace() {
+        #expect(
+            ACPClient.encodeModelChoice(
+                modelID: "  claude-opus-4-7  ",
+                providerID: "  anthropic  "
+            ) == "anthropic:claude-opus-4-7"
+        )
+    }
+
+    @Test func encodeModelChoiceEmptyModelReturnsEmpty() {
+        // Hermes treats empty as "leave alone" — keep that property so
+        // a `nil` ModelPreset.global-default path that falls through to
+        // an empty config.yaml model is a safe no-op.
+        #expect(
+            ACPClient.encodeModelChoice(modelID: "", providerID: "anthropic") == ""
+        )
+        #expect(
+            ACPClient.encodeModelChoice(modelID: "   ", providerID: "anthropic") == ""
+        )
+    }
+
     @Test func errorHintsClassifyCommonFailures() {
         let noCreds = ACPErrorHint.classify(
             errorMessage: "No Anthropic credentials found",

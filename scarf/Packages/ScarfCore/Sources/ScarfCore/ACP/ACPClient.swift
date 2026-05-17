@@ -368,9 +368,21 @@ public actor ACPClient {
     }
 
     /// Switch the model on a live ACP session via the `session/set_model`
-    /// JSON-RPC method. Hermes re-derives the provider from `modelID`
-    /// internally (see `_resolve_model_selection` in
-    /// `acp_adapter/server.py`), so we only need to pass the model name.
+    /// JSON-RPC method. The `modelID` wire value follows Hermes's ACP
+    /// model-choice encoding: `"<provider>:<model>"` when the caller
+    /// knows the provider, or the bare model name when it doesn't.
+    /// Hermes's `_resolve_model_selection` (acp_adapter/server.py:583)
+    /// parses the colon prefix explicitly; when absent, it falls back
+    /// to `detect_provider_for_model` which infers from the model name
+    /// only — and infers wrong for less-obvious IDs (e.g.
+    /// `inclusionai/ring-2.6-1t` won't reliably route to openrouter
+    /// without the prefix, per [#97](https://github.com/awizemann/scarf/issues/97)).
+    ///
+    /// **Pass the provider when you have it.** Every `ModelPreset`
+    /// carries `providerID` alongside `modelID`; both call sites in
+    /// `ChatViewModel` thread it through. Passing `providerID: nil`
+    /// keeps the old bare-model wire shape for callers that genuinely
+    /// don't know the provider.
     ///
     /// Used both at session boot (immediately after `newSession` to apply
     /// a project's bound preset before the user's first prompt) and at
@@ -378,12 +390,39 @@ public actor ACPClient {
     /// caller is responsible for capability-gating on
     /// `HermesCapabilities.hasACPSetSessionModel` — calling this against
     /// a pre-v0.13 host throws because the method doesn't exist.
-    public func setSessionModel(sessionId: String, modelID: String) async throws {
+    public func setSessionModel(
+        sessionId: String,
+        modelID: String,
+        providerID: String? = nil
+    ) async throws {
+        let wireModelID = Self.encodeModelChoice(modelID: modelID, providerID: providerID)
         let params: [String: AnyCodable] = [
             "sessionId": AnyCodable(sessionId),
-            "modelId": AnyCodable(modelID),
+            "modelId": AnyCodable(wireModelID),
         ]
         _ = try await sendRequest(method: "session/set_model", params: params)
+    }
+
+    /// Encode a model selection in Hermes's ACP wire format
+    /// (`<provider>:<model>`). Exposed as `static` for unit testing
+    /// and so call sites that need the encoded form without firing the
+    /// RPC (e.g. logging) can build it themselves.
+    ///
+    /// Rules (matching `acp_adapter/server.py`'s `_encode_model_choice`):
+    /// - Empty model → empty string (Hermes treats as "leave alone").
+    /// - Model present, provider absent or empty → bare model name
+    ///   (preserves backward compatibility with the bare-modelID call
+    ///   sites that worked before [#97](https://github.com/awizemann/scarf/issues/97)
+    ///   for models Hermes can auto-detect).
+    /// - Both present → `"<provider>:<model>"` (lower-cased provider to
+    ///   match Hermes's normalization).
+    public static func encodeModelChoice(modelID: String, providerID: String?) -> String {
+        let model = modelID.trimmingCharacters(in: .whitespaces)
+        if model.isEmpty { return "" }
+        guard let raw = providerID?.trimmingCharacters(in: .whitespaces), !raw.isEmpty else {
+            return model
+        }
+        return "\(raw.lowercased()):\(model)"
     }
 
     public func respondToPermission(requestId: Int, optionId: String) async {
