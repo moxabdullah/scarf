@@ -330,37 +330,31 @@ struct ChatView: View {
                         emptyState
                     }
                 }
-                if controller.vm.hasMoreHistory {
+                if controller.vm.hasHiddenInMemoryGroups || controller.vm.hasMoreHistory {
                     loadEarlierButton
                 }
-                ForEach(controller.vm.messages) { msg in
-                    MessageBubble(
-                        message: msg,
-                        turnDuration: controller.vm.turnDuration(forMessageId: msg.id)
+                ForEach(controller.vm.visibleGroups) { group in
+                    IOSMessageGroupView(
+                        group: group,
+                        turnDurations: controller.vm.turnDurations,
+                        isHydratingTools: controller.vm.isHydratingTools
                     )
                     .equatable()
-                    .id(msg.id)
+                    .id("group-\(group.id)")
                 }
                 if controller.vm.isGenerating {
-                    HStack {
-                        ProgressView()
-                        Text("Agent is thinking…")
-                            .font(.caption)
-                            .foregroundStyle(ScarfColor.foregroundMuted)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal)
+                    AgentThinkingCard(
+                        mode: controller.vm.isStreamingThoughtsOnly ? .reasoning : .working,
+                        serverName: config.displayName
+                    )
+                    .padding(.horizontal, ScarfSpace.s3)
+                    .id("agent-thinking-card")
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
                 } else if controller.vm.isPostProcessing {
-                    HStack(spacing: 6) {
-                        Image(systemName: "ellipsis")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                        Text("Finishing up…")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal)
+                    AgentThinkingCard(mode: .finishing, serverName: config.displayName)
+                        .padding(.horizontal, ScarfSpace.s3)
+                        .id("agent-finishing-card")
+                        .transition(.opacity)
                 }
             }
             .padding(.vertical)
@@ -396,7 +390,11 @@ struct ChatView: View {
     @ViewBuilder
     private var loadEarlierButton: some View {
         Button {
-            Task { await controller.vm.loadEarlier() }
+            if controller.vm.hasHiddenInMemoryGroups {
+                controller.vm.extendRenderWindow()
+            } else {
+                Task { await controller.vm.loadEarlier() }
+            }
         } label: {
             HStack(spacing: 6) {
                 if controller.vm.isLoadingEarlier {
@@ -406,7 +404,7 @@ struct ChatView: View {
                     Image(systemName: "arrow.up.circle")
                         .font(.caption)
                 }
-                Text(controller.vm.isLoadingEarlier ? "Loading earlier…" : "Load earlier messages")
+                Text(loadEarlierTitle)
                     .font(.caption)
             }
             .foregroundStyle(ScarfColor.foregroundMuted)
@@ -418,6 +416,12 @@ struct ChatView: View {
         .disabled(controller.vm.isLoadingEarlier)
         .frame(maxWidth: .infinity)
         .padding(.top, 8)
+    }
+
+    private var loadEarlierTitle: String {
+        if controller.vm.isLoadingEarlier { return "Loading earlier…" }
+        if controller.vm.hasHiddenInMemoryGroups { return "Show more messages" }
+        return "Load earlier messages"
     }
 
     @ViewBuilder
@@ -484,19 +488,11 @@ struct ChatView: View {
                 showSpinner: false
             )
         default:
-            // v2.7: surface "Thinking…" while the agent's thought
-            // stream is in flight without any visible message bytes.
-            // Hermes reasoning models commonly take 3–8 s here and
-            // the streaming bubble has nothing to render — the user
-            // would otherwise see a stalled transcript. Disappears
-            // the moment the first message chunk arrives.
-            if controller.vm.isStreamingThoughtsOnly {
-                connectionBannerStrip(
-                    text: "Thinking…",
-                    tint: ScarfColor.info,
-                    showSpinner: true
-                )
-            } else if controller.vm.isHydratingTools {
+            // Keep top banners for connection / hydration states only.
+            // The live agent state now renders inline at the transcript
+            // tail via `AgentThinkingCard`, which feels more like an
+            // Apple Messages typing indicator and avoids a jumpy top bar.
+            if controller.vm.isHydratingTools {
                 // v2.7 — Phase 2 tool-call hydration is in flight.
                 // Bare conversation skeleton is already on screen;
                 // this banner tells the user the tool cards are
@@ -2293,6 +2289,193 @@ private struct PermissionWrapper: Identifiable {
     var id: Int { value.requestId }
 }
 
+// MARK: - Optimized transcript rendering
+
+/// iOS-flavored message group renderer. It uses the shared
+/// `RichChatViewModel.visibleGroups` render window so long sessions do not
+/// materialize hundreds of SwiftUI bubbles on every streaming token, while
+/// keeping the eager VStack workaround that avoids LazyVStack identity churn
+/// crashes during streaming.
+private struct IOSMessageGroupView: View, Equatable {
+    let group: MessageGroup
+    let turnDurations: [Int: TimeInterval]
+    var isHydratingTools: Bool
+
+    static func == (lhs: IOSMessageGroupView, rhs: IOSMessageGroupView) -> Bool {
+        guard lhs.group.id == rhs.group.id else { return false }
+        guard lhs.group.userMessage?.id == rhs.group.userMessage?.id else { return false }
+        guard lhs.group.userMessage?.content == rhs.group.userMessage?.content else { return false }
+        guard lhs.group.assistantMessages.count == rhs.group.assistantMessages.count else { return false }
+        guard lhs.group.toolResults.count == rhs.group.toolResults.count else { return false }
+        guard lhs.isHydratingTools == rhs.isHydratingTools else { return false }
+        for (left, right) in zip(lhs.group.assistantMessages, rhs.group.assistantMessages) {
+            if left.id != right.id { return false }
+            if left.id == 0 {
+                if left.content != right.content { return false }
+                if left.reasoning != right.reasoning { return false }
+                if left.reasoningContent != right.reasoningContent { return false }
+                if left.toolCalls.count != right.toolCalls.count { return false }
+            }
+        }
+        for message in lhs.group.assistantMessages where message.isAssistant && message.id != 0 {
+            if lhs.turnDurations[message.id] != rhs.turnDurations[message.id] { return false }
+        }
+        return true
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: ScarfSpace.s2) {
+            if let user = group.userMessage {
+                MessageBubble(message: user, turnDuration: nil)
+                    .equatable()
+            }
+
+            let bubbles = isHydratingTools
+                ? group.assistantMessages
+                : group.coalescedAssistantBubbles
+            ForEach(Array(bubbles.enumerated()), id: \.offset) { _, message in
+                MessageBubble(
+                    message: message,
+                    turnDuration: message.isAssistant ? turnDurations[message.id] : nil
+                )
+                .equatable()
+            }
+
+            if group.toolCallCount > 1 {
+                toolSummary
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var toolSummary: some View {
+        let kinds = group.toolKindCounts
+        if !kinds.isEmpty {
+            HStack(spacing: 5) {
+                Image(systemName: "wrench.and.screwdriver")
+                    .font(.caption2)
+                Text(summaryText(kinds))
+                    .font(.caption2)
+                    .lineLimit(1)
+            }
+            .foregroundStyle(ScarfColor.foregroundFaint)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, ScarfSpace.s1)
+        }
+    }
+
+    private func summaryText(_ kinds: [ToolKind: Int]) -> String {
+        let total = kinds.values.reduce(0, +)
+        let parts = kinds
+            .sorted { $0.value > $1.value }
+            .map { "\($0.value) \($0.key.rawValue)" }
+            .joined(separator: ", ")
+        return "Used \(total) tools (\(parts))"
+    }
+}
+
+/// Polished, non-blocking activity card for Hermes agent work. This replaces
+/// the old plain spinner with an Apple-native, transcript-anchored status that
+/// distinguishes reasoning, active generation, and post-processing.
+private struct AgentThinkingCard: View {
+    enum Mode {
+        case reasoning
+        case working
+        case finishing
+
+        var title: String {
+            switch self {
+            case .reasoning: return "Thinking through it"
+            case .working: return "Hermes is working"
+            case .finishing: return "Finishing up"
+            }
+        }
+
+        var subtitle: String {
+            switch self {
+            case .reasoning: return "Reasoning before the first visible token"
+            case .working: return "Streaming the answer and tool updates"
+            case .finishing: return "Saving metadata and closing the turn"
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .reasoning: return "brain.head.profile"
+            case .working: return "sparkles"
+            case .finishing: return "checkmark.seal"
+            }
+        }
+    }
+
+    let mode: Mode
+    let serverName: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(alignment: .center, spacing: ScarfSpace.s3) {
+            ZStack {
+                RoundedRectangle(cornerRadius: ScarfRadius.lg, style: .continuous)
+                    .fill(ScarfGradient.brand)
+                    .frame(width: 34, height: 34)
+                    .scarfShadow(.sm)
+                Image(systemName: mode.icon)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion && mode != .finishing)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: ScarfSpace.s2) {
+                    Text(mode.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(ScarfColor.foregroundPrimary)
+                    if mode != .finishing {
+                        AnimatedThinkingDots(reduceMotion: reduceMotion)
+                    }
+                }
+                Text("\(mode.subtitle) · \(serverName)")
+                    .font(.caption)
+                    .foregroundStyle(ScarfColor.foregroundMuted)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, ScarfSpace.s3)
+        .padding(.vertical, ScarfSpace.s3)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: ScarfRadius.xl, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: ScarfRadius.xl, style: .continuous)
+                .strokeBorder(ScarfColor.accent.opacity(mode == .finishing ? 0.12 : 0.22), lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(mode.title). \(mode.subtitle). Connected to \(serverName).")
+    }
+}
+
+private struct AnimatedThinkingDots: View {
+    let reduceMotion: Bool
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            let time = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
+            HStack(spacing: 3) {
+                ForEach(0..<3, id: \.self) { index in
+                    let phase = time * 3.2 + Double(index) * 0.65
+                    let scale = reduceMotion ? 1.0 : 0.72 + 0.28 * (sin(phase) + 1) / 2
+                    Circle()
+                        .fill(ScarfColor.accent)
+                        .frame(width: 5, height: 5)
+                        .scaleEffect(scale)
+                        .opacity(reduceMotion ? 0.55 : 0.35 + 0.45 * (sin(phase) + 1) / 2)
+                }
+            }
+        }
+        .frame(width: 24, height: 10)
+        .accessibilityHidden(true)
+    }
+}
+
 // MARK: - Message bubble
 
 private struct MessageBubble: View, Equatable {
@@ -2303,15 +2486,10 @@ private struct MessageBubble: View, Equatable {
     /// resumed messages.
     var turnDuration: TimeInterval? = nil
 
-    /// SwiftUI body short-circuit (issue #46 — iOS path). On iOS the
-    /// chat list is `LazyVStack` over `controller.vm.messages` directly
-    /// (no message-group layer), so every visible bubble re-evaluates
-    /// its body on each streamed chunk because `messages` mutates and
-    /// the `@Observable` VM invalidates anyone reading it. Without
-    /// equatable short-circuiting, every visible bubble re-runs
-    /// `ChatContentFormatter.segments` + `AttributedString(markdown:)`
-    /// per chunk — CPU-expensive on phones, especially with long
-    /// content already on screen.
+    /// SwiftUI body short-circuit (issue #46 — iOS path). iOS now renders
+    /// `RichChatViewModel.visibleGroups`, so settled groups skip body work,
+    /// and this per-bubble guard keeps the active streaming bubble as the
+    /// only markdown/code-block parser that re-runs per chunk.
     ///
     /// Streaming message has `id == 0` (shared with Mac via
     /// `RichChatViewModel.streamingId`); it correctly redraws on
